@@ -1,0 +1,17 @@
+import { NavigationProvider } from "../lib/navigation";
+import "./style.css";
+import "./enterprise.css";
+import "./density.css";
+export const metadata = {
+  title: "PLAN EDU SUITE",
+  description: "Academic operations, thoughtfully connected.",
+};
+export default function Layout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <NavigationProvider>{children}</NavigationProvider>
+      </body>
+    </html>
+  );
+}

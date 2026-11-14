@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+**/.next
+**/.next-dev
+**/dist
+.env
+.git
+.verification
+*.zip
+*.tsbuildinfo
+backups
+
+test-results
+playwright-report

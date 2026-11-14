@@ -1,0 +1,240 @@
+generator client {
+  provider = "prisma-client-js"
+  output = "../node_modules/.prisma/client"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+model Organization {
+  id String @id @default(uuid())
+  name String
+  legalName String @default("")
+  type String @default("Education trust")
+  registration String @default("")
+  address String @default("")
+  city String @default("")
+  state String @default("")
+  postalCode String @default("")
+  contactName String @default("")
+  phone String @default("")
+  email String @unique
+  notes String @default("")
+  status String @default("DRAFT")
+  onboardingStep Int @default(1)
+  completedSteps Int[] @default([])
+  activatedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  users User[]
+  institutions Institution[]
+  subscriptions Subscription[]
+  requests ChangeRequest[]
+}
+model User {
+  id String @id @default(uuid())
+  email String @unique
+  name String
+  passwordHash String
+  role String
+  mustChangePassword Boolean @default(true)
+  organizationId String? @unique
+  organization Organization? @relation(fields:[organizationId],references:[id])
+  sessions Session[]
+  createdAt DateTime @default(now())
+}
+model Session {
+  id String @id
+  userId String
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  csrf String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+model Institution {
+  updatedAt DateTime @updatedAt
+  id String @id @default(uuid())
+  organizationId String
+  organization Organization @relation(fields:[organizationId],references:[id])
+  name String
+  registration String
+  address String @default("")
+  boards String[]
+  logo String @default("")
+  officer String @default("")
+  phone String @default("")
+  email String @default("")
+  status String @default("ACTIVE")
+  deletionRequestedAt DateTime?
+  deletionDueAt DateTime?
+  preDeletionStatus String?
+  legalHold Boolean @default(false)
+  createdAt DateTime @default(now())
+  years AcademicYear[]
+  entitlement Entitlement?
+  @@unique([organizationId,registration])
+}
+model Subscription {
+  updatedAt DateTime @updatedAt
+  id String @id @default(uuid())
+  organizationId String
+  organization Organization @relation(fields:[organizationId],references:[id])
+  reference String @unique
+  amount Decimal @db.Decimal(14,2)
+  startsAt DateTime
+  endsAt DateTime
+  status String @default("DRAFT")
+  agreementStatus String @default("PENDING")
+  paymentStatus String @default("PENDING")
+  paymentReference String @default("")
+  notes String @default("")
+  exceptionReason String @default("")
+  renewalNotes String @default("")
+  classroomLimit Int @default(0)
+  userLimit Int @default(1)
+  // Legacy institution allocations are retained for migration/audit only.
+  entitlements Entitlement[]
+  createdAt DateTime @default(now())
+  @@index([organizationId,status,startsAt,endsAt])
+}
+model Entitlement {
+  id String @id @default(uuid())
+  institutionId String @unique
+  institution Institution @relation(fields:[institutionId],references:[id],onDelete:Cascade)
+  subscriptionId String
+  subscription Subscription @relation(fields:[subscriptionId],references:[id])
+  classroomLimit Int
+}
+model AcademicYear {
+  id String @id @default(uuid())
+  institutionId String
+  institution Institution @relation(fields:[institutionId],references:[id],onDelete:Cascade)
+  label String
+  startsAt DateTime
+  endsAt DateTime
+  publishedRevisionId String? @unique
+  publishedRevision Revision? @relation("Published",fields:[publishedRevisionId],references:[id],onDelete:SetNull)
+  draftRevisionId String? @unique
+  draftRevision Revision? @relation("Draft",fields:[draftRevisionId],references:[id],onDelete:SetNull)
+  revisions Revision[] @relation("YearRevisions")
+  @@unique([institutionId,label])
+  @@index([institutionId,startsAt])
+}
+model Revision {
+  id String @id @default(uuid())
+  yearId String
+  year AcademicYear @relation("YearRevisions",fields:[yearId],references:[id],onDelete:Cascade)
+  publishedFor AcademicYear? @relation("Published")
+  draftFor AcademicYear? @relation("Draft")
+  sequence Int
+  status String @default("DRAFT")
+  lock Int @default(0)
+  summary String @default("")
+  warnings Json @default("[]")
+  createdAt DateTime @default(now())
+  publishedAt DateTime?
+  boards RevisionBoard[]
+  @@unique([yearId,sequence])
+}
+model RevisionBoard {
+  id String @id
+  revisionId String
+  revision Revision @relation(fields:[revisionId],references:[id],onDelete:Cascade)
+  boardKey String
+  name String
+  sections Section[]
+  classrooms Classroom[]
+  grades Grade[]
+  schedules Schedule[]
+  events CalendarEvent[]
+  nonWorkingDays Int[] @default([0])
+  @@unique([revisionId,boardKey])
+}
+model Section {
+  id String @id
+  boardId String
+  board RevisionBoard @relation(fields:[boardId],references:[id],onDelete:Cascade)
+  entityKey String
+  name String
+  grades Grade[]
+  @@unique([boardId,name])
+  @@unique([boardId,entityKey])
+}
+model Grade {
+  id String @id
+  boardId String
+  board RevisionBoard @relation(fields:[boardId],references:[id],onDelete:Cascade)
+  entityKey String
+  name String
+  active Boolean @default(true)
+  sectionId String?
+  section Section? @relation(fields:[sectionId],references:[id],onDelete:SetNull)
+  classrooms Classroom[]
+  @@unique([boardId,name])
+  @@unique([boardId,entityKey])
+}
+model Classroom {
+  boardId String
+  board RevisionBoard @relation(fields:[boardId],references:[id],onDelete:Cascade)
+  id String @id
+  gradeId String
+  grade Grade @relation(fields:[gradeId],references:[id],onDelete:Cascade)
+  entityKey String
+  name String
+  active Boolean @default(true)
+  @@unique([gradeId,entityKey])
+  @@unique([boardId,name])
+}
+model Schedule {
+  id String @id
+  boardId String
+  board RevisionBoard @relation(fields:[boardId],references:[id],onDelete:Cascade)
+  entityKey String
+  name String
+  arrival Int
+  dispersal Int
+  dayType String @default("full")
+  target Json
+  rule Json
+  slots Json
+}
+model CalendarEvent {
+  overridesHoliday Boolean @default(false)
+  id String @id
+  boardId String
+  board RevisionBoard @relation(fields:[boardId],references:[id],onDelete:Cascade)
+  entityKey String
+  name String
+  kind String
+  target Json
+  rule Json
+}
+model ChangeRequest {
+  id String @id @default(uuid())
+  organizationId String
+  organization Organization @relation(fields:[organizationId],references:[id])
+  institutionId String
+  proposed Json
+  reason String
+  status String @default("PENDING")
+  resolution String @default("")
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+}
+model AuditLog {
+  id String @id @default(uuid())
+  actorId String
+  organizationId String?
+  action String
+  entityId String
+  detail Json
+  createdAt DateTime @default(now())
+  @@index([organizationId,createdAt])
+}
+
+model PlatformSetting {
+ id String @id
+ values Json
+ lock Int @default(0)
+ updatedAt DateTime @updatedAt
+}

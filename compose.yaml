@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: plan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-plan_local_only}
+      POSTGRES_DB: plan
+    ports: ["127.0.0.1:55432:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plan -d plan"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  minio:
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+      target: server
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-plan_local}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-plan_local_secret}
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    volumes: ["assets_data:/data"]
+    restart: unless-stopped
+  bucket:
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+      target: client
+    entrypoint: /bin/sh
+    command:
+      [
+        "-c",
+        'until mc alias set local http://minio:9000 "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"; do sleep 2; done; mc mb --ignore-existing local/plan-assets; mc anonymous set download local/plan-assets',
+      ]
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-plan_local}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-plan_local_secret}
+    depends_on: [minio]
+  api:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgresql://plan:${POSTGRES_PASSWORD:-plan_local_only}@postgres:5432/plan
+      S3_ENDPOINT: http://minio:9000
+      API_PORT: 4000
+    command:
+      [
+        "sh",
+        "-c",
+        'npm run db:migrate && if [ "$$NODE_ENV" != production ]; then npm run db:seed; fi && node apps/api/dist/apps/api/src/main.js',
+      ]
+    depends_on:
+      postgres: { condition: service_healthy }
+      bucket: { condition: service_completed_successfully }
+    restart: unless-stopped
+  web:
+    build: .
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:4000
+      NEXT_TELEMETRY_DISABLED: 1
+    command: ["npm", "run", "start", "-w", "@plan/web"]
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [api]
+    restart: unless-stopped
+  backups:
+    image: postgres:17-bookworm
+    environment:
+      PGHOST: postgres
+      PGUSER: plan
+      PGPASSWORD: ${POSTGRES_PASSWORD:-plan_local_only}
+      PGDATABASE: plan
+    volumes: ["backups:/backups"]
+    entrypoint: /bin/sh
+    command:
+      [
+        "-c",
+        "while true; do stamp=$$(date -u +%Y%m%dT%H%M%SZ); pg_dump -Fc -f /backups/plan-$$stamp.dump && find /backups -name '*.dump' -mtime +14 -delete; sleep 86400; done",
+      ]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  assets_data:
+  backups:

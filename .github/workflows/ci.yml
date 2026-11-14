@@ -1,0 +1,57 @@
+name: Verify PLAN EDU SUITE
+on: [push, pull_request]
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: plan
+          POSTGRES_PASSWORD: ci_test_only_password
+          POSTGRES_DB: plan_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U plan -d plan_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://plan:ci_test_only_password@localhost:5432/plan_test
+      WEB_ORIGIN: http://localhost:3000
+      API_INTERNAL_URL: http://localhost:4000
+      SEED_ADMIN_EMAIL: ci-admin@example.com
+      SEED_ADMIN_PASSWORD: CITemporaryPassword!2026
+      DEV_SEED_SAMPLE_DATA: "false"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - run: cp .env.example .env
+      - run: npm ci --no-audit --no-fund
+      - run: npm run db:generate && npm run db:migrate
+      - run: npm run typecheck && npm test && npm run test:db
+      - run: npm run build
+      - run: npm run db:seed
+      - name: Start servers and exercise actual HTTP flows
+        env:
+          E2E_BASE_URL: http://localhost:3000/api
+          E2E_ADMIN_EMAIL: ci-admin@example.com
+          E2E_ADMIN_PASSWORD: CITemporaryPassword!2026
+          E2E_ADMIN_NEW_PASSWORD: CIChangedPassword!2026
+        run: |
+          NODE_ENV=development npm run start -w @plan/api > /tmp/plan-api.log 2>&1 &
+          npm run start -w @plan/web > /tmp/plan-web.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/api/health; then break; fi
+            sleep 2
+          done
+          npm run test:e2e
+
+      - name: Install browser and verify the real interface
+        env:
+          E2E_WEB_URL: http://localhost:3000
+          E2E_ADMIN_EMAIL: ci-admin@example.com
+          E2E_ADMIN_PASSWORD: CIChangedPassword!2026
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
