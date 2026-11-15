@@ -103,3 +103,23 @@ Six client sections are Overview, Schools, Structure Management, Academic Years,
 Major platform and structure workflows render a dedicated page surface with a back button and breadcrumb, rather than an oversized dialog. Platform page/record/workflow context is reflected in query parameters and restored on refresh and browser history navigation; identifiers are checked against the authenticated data set. Form values and credentials are never put in URLs. Structure year/board context is retained per school; structure editor state is not encoded in a deep link. Navigation guards continue to offer save/discard/stay for unsaved changes. Confirmations, credentials, lifecycle warnings, account password changes and small grade/section/classroom edits remain dialogs.
 
 `GET /organization-profile` returns only the current organization registration and contractual subscription metadata, without user secrets or other organizations. It powers Account & Subscription. User-management and additional organization roles remain out of scope.
+
+
+## Board presets and dependency previews
+
+Academic structure presets live in the existing version-locked platform settings JSON, with validated defaults for existing installations. Super Admin edits reusable suggestions in Settings. Applying a preset never updates the catalogue or published snapshots: the shared domain planner reuses existing logical grade/section IDs, preserves classrooms, and changes exactly one board in the authorized working draft. The backend commits the plan through the normal save transaction and license checks.
+
+Impact previews derive changes from logical UUIDs, then collect descendant classrooms, old/new academic sections and potentially affected scoped bell/calendar rules across boards. Dependency lists describe what to review; actual create/update/remove counts come from the record diff. Moving a grade to another section retains identity. Moving an existing grade/section/classroom ID to another board, or a classroom ID to another grade, is rejected.
+
+The web client sends the draft revision ID alongside its optimistic lock. This prevents a stale tab from writing to a replacement draft with the same counter. Published revisions are additionally read-only at writeConfig. Review and preview are read-only; publication still revalidates everything under database locks. Restore always creates a separate draft; stale discards cannot remove newer saved work.
+
+Recurrence ranges and catalogue entries use existing JSON columns, requiring no additional migration for this enhancement. The existing calendar resolver remains authoritative; matching-date previews do not replace effective-calendar conflict/holiday resolution.
+
+
+## Organization client portal read models
+
+The client portal adds read-only directory/detail projections over existing schools, academic years, revisions, audit logs and contracts. The session organization is always authoritative. PostgreSQL selects exactly one represented year per school before filtering, counts and pagination; the browser never combines all years into one status. The shared portal domain selector gives school details and the workspace the same current/selected-year policy.
+
+Directory pages fetch a single debounced endpoint instead of issuing configuration calls per row. Selected school/year, display mode and filters survive navigation. Protected school identity uses a dedicated read-only page; academic edits continue through existing draft/review/publication APIs. Inactive identity is visible, while configuration access remains restricted. Published rows, organization-wide licensing and deletion recovery are unchanged.
+
+The additive Revision.updatedAt column is maintained on saves/publication and backfilled without replacing snapshots. Existing audit logs plus new draft-save changes supply real recent activity. Isolated test runners create/drop only random temporary schemas; they do not reseed or alter the application's schema/users.

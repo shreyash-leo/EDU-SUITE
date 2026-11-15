@@ -58,6 +58,8 @@ import {
   MoreHorizontal,
   ShieldCheck,
   Loader2,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import {
   autoAssign,
@@ -100,15 +102,14 @@ export function Button({
   variant = "",
   disabled = false,
   type = "button",
-}: {
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   children: React.ReactNode;
-  onClick?: () => void;
   variant?: string;
-  disabled?: boolean;
-  type?: "button" | "submit";
 }) {
   return (
     <ShadcnButton
+      {...props}
       type={type}
       variant={
         variant === "dark"
@@ -117,7 +118,7 @@ export function Button({
             ? "destructive"
             : "outline"
       }
-      className={variant}
+      className={[variant, props.className].filter(Boolean).join(" ")}
       disabled={disabled}
       onClick={onClick}
     >
@@ -219,6 +220,7 @@ export function Form({
   submit = "Save changes",
   extraDirty = false,
   onDiscard,
+  onCancel,
 }: {
   fields: Field[];
   initial?: RecordData;
@@ -226,6 +228,7 @@ export function Form({
   submit?: string;
   extraDirty?: boolean;
   onDiscard?: () => void;
+  onCancel?: () => void;
 }) {
   const formId = React.useId();
   const {
@@ -233,7 +236,7 @@ export function Form({
     handleSubmit,
     reset,
     formState: { errors, isSubmitting, isDirty },
-  } = useForm<RecordData>({ defaultValues: initial });
+  } = useForm<RecordData>({ defaultValues: initial, mode: "onBlur", reValidateMode: "onChange" });
   const [error, setError] = useState("");
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
   const dirtyRef = useRef(false);
@@ -289,7 +292,10 @@ export function Form({
             ) : f.type === "textarea" ? (
               <Textarea aria-invalid={!!errors[f.key]} aria-describedby={[f.help ? `${formId}-${f.key}-help` : "", errors[f.key] ? `${formId}-${f.key}-error` : ""].filter(Boolean).join(" ") || undefined} {...register(f.key, { required: f.required })} />
             ) : (
+              <div className={f.type === "password" ? "field-input password-input" : "field-input"}>
               <Input
+                aria-label={f.label}
+                aria-required={f.required || undefined}
                 type={f.type === "password" && visiblePasswords[f.key] ? "text" : f.type || "text"}
                 autoComplete={f.autoComplete}
                 aria-invalid={!!errors[f.key]}
@@ -299,16 +305,18 @@ export function Form({
                   valueAsNumber: f.type === "number",
                 })}
               />
-            )}{" "}
             {f.type === "password" && (
               <button
                 type="button"
+                className="password-toggle"
                 aria-pressed={!!visiblePasswords[f.key]}
                 aria-label={`${visiblePasswords[f.key] ? "Hide" : "Show"} ${f.label.toLowerCase()}`}
                 onClick={() => setVisiblePasswords((previous) => ({ ...previous, [f.key]: !previous[f.key] }))}
               >
-                {visiblePasswords[f.key] ? "Hide password" : "Show password"}
+                {visiblePasswords[f.key] ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
+            )}
+              </div>
             )}
             {errors[f.key] && (
               <small className="error-text" id={`${formId}-${f.key}-error`}>{f.label} is required</small>
@@ -324,6 +332,7 @@ export function Form({
         </div>
       )}
       <footer className="form-footer">
+        {onCancel && <Button disabled={isSubmitting} onClick={onCancel}>Cancel</Button>}
         <Button type="submit" variant="dark" disabled={isSubmitting}>
           {isSubmitting ? (
             <Loader2 size={15} className="spin" />

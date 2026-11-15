@@ -2,6 +2,18 @@
 
 An integrated Next.js + NestJS + PostgreSQL application for platform onboarding and institution Structure Management. The interface uses a light data workspace, persistent navy app bar, compact collapsible navigation, charcoal action accents, compact record tables and guided workflows. The interface follows Salesforce Lightning record layouts and Microsoft Teams/Fluent spacing and typography patterns.
 
+## Organization client portal
+
+See `CLIENT_PORTAL_2026-11-15.md` for the five-section navigation, organization Overview, server-paginated Schools List/Card directory, read-only School Details and Structure Management landing dashboard. Academic-year management now lives inside each school workspace. Apply additive migration `202611150002_revision_updated_at` and generate Prisma Client on other installations; existing data and credentials remain intact. Use isolated database/HTTP test scripts for safe verification.
+
+## Academic structure enhancements
+
+See `STRUCTURE_ENHANCEMENTS_2026-11-15.md` for configurable board grade/section presets, assignment impact previews, date-limited recurrence previews, calendar totals and draft protection. Super Admin manages presets under Requests & Settings → Platform settings → Edit academic presets. School users choose Apply Suggested Structure in School Registration or Academic Sections, customize, preview impact, then confirm for the selected board. No additional migration or reset is required for these enhancements; earlier pending migrations still apply.
+
+## Latest UI/UX workflow update
+
+See `UI_WORKFLOWS_2026-11-15.md` for the new multi-board selector/catalogue, bulk grades, section assignment, editable classroom previews, guided bell setup and simplified calendar/rule navigation. Source checks and the production build passed; authenticated database/browser acceptance remains unexecuted in this session. Existing data, credentials and business rules are preserved.
+
 ## Current refinement update
 
 See `IMPLEMENTATION_2026-11-15.md` for the requirement audit, changes and verification limits. The interface now uses School terminology, dedicated workflow pages, six client navigation sections, shared school-wide scheduling and scoped calendar totals. Apply migration `202611150001_calendar_overrides` before running this version against an existing database. Keep the current `.env` and database volumes.

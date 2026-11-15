@@ -155,6 +155,13 @@ const ROUTES: [string, string, string][] = [
   ["GET", "/settings", "Platform settings"],
   ["PUT", "/settings", "Update platform settings"],
   ["GET", "/workspace-settings", "Organization support information"],
+  ["GET", "/client-portal", "Paginated organization school directory and overview"],
+  ["GET", "/institutions/:id/portal", "Read-only school details and selected-year summary"],
+  ["GET", "/academic-presets", "Configurable academic structure suggestions"],
+  ["POST", "/years/{id}/preset-preview", "Preview selected-board suggestions"],
+  ["POST", "/years/{id}/preset-apply", "Apply reviewed suggestions to an editable board"],
+  ["POST", "/years/{id}/impact", "Preview structural dependencies"],
+  ["POST", "/years/{id}/rule-preview", "Preview matching recurrence dates"],
   ["GET", "/organization-profile", "Current organization registration and contract allowances"],
   ["GET", "/onboarding", "Onboarding progress and blocking issues"],
   ["GET", "/dashboard", "Dashboard counts"],
@@ -317,7 +324,11 @@ class ApiController {
       return service.publicSettings();
     if (path === "/onboarding" && method === "GET")
       return service.onboardingOverview(a);
+    if (path === "/academic-presets" && method === "GET") return service.academicPresets();
     if (path === "/organization-profile" && method === "GET") return service.organizationProfile(a);
+    if (path === "/client-portal" && method === "GET") return service.clientPortal(a, req.query);
+    const clientSchoolMatch = path.match(/^\/institutions\/([^/]+)\/portal$/);
+    if (clientSchoolMatch && method === "GET") return service.clientSchool(a, clientSchoolMatch[1], typeof req.query.yearId === "string" ? req.query.yearId : undefined);
     if (path === "/dashboard" && method === "GET") return service.dashboard(a);
     if (path === "/organizations") {
       if (method === "GET") return service.orgs(a);
@@ -358,7 +369,7 @@ class ApiController {
     m = path.match(/^\/subscriptions\/([^/]+)$/);
     if (m && method === "PUT")
       return service.saveSubscription(a, body, z.string().uuid().parse(m[1]));
-    m = path.match(/^\/years\/([^/]+)\/(config|draft|review|publish|history|preview|calendar-summary)$/);
+    m = path.match(/^\/years\/([^/]+)\/(config|draft|review|publish|history|preview|calendar-summary|preset-preview|preset-apply|impact|rule-preview)$/);
     if (m) {
       const id = z.string().uuid().parse(m[1]);
       if (m[2] === "config") {
@@ -374,8 +385,12 @@ class ApiController {
       }
       if (m[2] === "draft") {
         if (method === "POST") return service.draft(a, id, body);
-        if (method === "DELETE") return service.discard(a, id);
+        if (method === "DELETE") return service.discard(a, id, body);
       }
+      if (m[2] === "preset-preview" && method === "POST") return service.presetPreview(a, id, body);
+      if (m[2] === "preset-apply" && method === "POST") return service.presetPreview(a, id, body, true);
+      if (m[2] === "impact" && method === "POST") return service.impactPreview(a, id, body);
+      if (m[2] === "rule-preview" && method === "POST") return service.rulePreview(a, id, body);
       if (m[2] === "calendar-summary" && method === "POST") return service.calendarSummary(a, id, body);
       if (m[2] === "preview" && method === "POST") return service.preview(a, id, body);
       if (m[2] === "review" && method === "GET") return service.review(a, id);

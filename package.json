@@ -18,7 +18,10 @@
     "test:e2e": "node --test tests/http.e2e.mjs",
     "admin:provision": "tsx scripts/provision-admin.ts",
     "admin:reset-local": "node scripts/check-runtime.cjs && tsx scripts/reset-local-admin.ts",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:db:isolated": "node scripts/check-runtime.cjs && node --env-file=.env scripts/test-isolated-db.cjs",
+    "test:browser:isolated": "node scripts/check-runtime.cjs && npm run build -w @plan/api && node --env-file=.env scripts/test-isolated-db.cjs --browser",
+    "test:http:isolated": "node scripts/check-runtime.cjs && npm run build -w @plan/api && node --env-file=.env scripts/test-isolated-db.cjs --http"
   },
   "dependencies": {
     "@prisma/client": "6.19.3",

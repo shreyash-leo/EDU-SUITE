@@ -1,4 +1,13 @@
 "use client";
+import { PresetPreview } from "./preset-preview";
+import { operationalYear } from "../../../../packages/domain/src/portal";
+import { ImpactPreview } from "./impact-preview";
+import { configurationImpact, type ConfigurationImpact } from "../../../../packages/domain/src/impact";
+import { RecurrencePreview } from "./recurrence-preview";
+import { ScopeRule, defaultRule } from "./scope-rule";
+import { ScheduleWizard } from "./schedule-wizard";
+import { BulkGrades, ClassroomBuilder } from "./bulk-builders";
+import { SectionAssignments } from "./section-assignments";
 import { AcademicYearForm } from "./academic-year";
 import { BellCalendar } from "./calendar";
 import { ChangeReview } from "./change-review";
@@ -102,22 +111,33 @@ import {
 export function Structure({
   institution: i,
   workspaceSection = "Structure Management",
+  initialIntent = "default",
   onOpenStructure,
   onBack,
   notify,
 }: {
   institution: RecordData;
   workspaceSection?: string;
+  initialIntent?: "default" | "review" | "calendar" | "grades" | "edit" | "bell" | "history";
   onOpenStructure?: () => void;
   onBack: () => void;
   notify: (s: string) => void;
 }) {
+  const [yearView, setYearView] = useState(false);
+  useEffect(() => {
+    const saved = sessionStorage.getItem(`plan-structure-tab-${i.id}`);
+    if (["calendar", "bell"].includes(initialIntent)) setTab("Bell Time & Calendar");
+    else if (initialIntent === "grades") setTab("School Registration");
+    else if (saved && ["School Registration", "Academic Sections", "Classroom Setup", "Bell Time & Calendar"].includes(saved)) setTab(saved);
+  }, [i.id, initialIntent]);
   const [years, setYears] = useState<RecordData[]>([]);
   const [yearId, setYearId] = useState("");
   const [record, setRecord] = useState<RecordData | null>(null);
   const [config, setConfig] = useState<Config>({ boards: [] });
-  const [tab, setTab] = useState("School Registration");
+  const [tab, setTab] = useState(["calendar", "bell"].includes(initialIntent) ? "Bell Time & Calendar" : "School Registration");
+  const [classSection, setClassSection] = useState(""), [classGrade, setClassGrade] = useState("");
   const [boardId, setBoardId] = useState("");
+  useEffect(() => { setClassSection(""); setClassGrade(""); }, [boardId]);
   useEffect(() => { if (boardId) sessionStorage.setItem(`plan-board-${i.id}`, boardId); }, [boardId, i.id]);
   const [modal, setModalState] = useState<RecordData | null>(null);
   const { navigate } = useNavigation();
@@ -133,6 +153,9 @@ export function Structure({
   const [history, setHistory] = useState<RecordData[]>([]);
   const [busy, setBusy] = useState(false);
   const lockRef = useRef(0);
+  const revisionRef = useRef("");
+  const [reviewImpact, setReviewImpact] = useState<ConfigurationImpact | null>(null);
+  const [manualBoard, setManualBoard] = useState("");
   const latest = useRef(config);
   const changeSeq = useRef(0);
   const savedSeq = useRef(0);
@@ -147,6 +170,9 @@ export function Structure({
   // Optimistic display only; all writes are checked under the backend organization lock.
   const displayedUsage = editable ? license.used - institutionReserved + Math.max(otherYearUsage, localUsage) : license.used;
   const board = config.boards.find((b) => b.id === boardId) || config.boards[0];
+  const classroomRows = (board?.grades || []).filter((g) => (!classSection || (classSection === "unassigned" ? !g.sectionId : g.sectionId === classSection)) && (!classGrade || g.id === classGrade)).flatMap((g) => g.classrooms.map((c) => ({ ...c, gradeId: g.id, gradeName: g.name, sectionName: board.sections.find((s) => s.id === g.sectionId)?.name || "Unassigned" })));
+  const availableClassrooms = license.contractId && !license.contractConflict && displayedUsage <= license.limit ? Math.max(0, license.limit - (license.used - institutionReserved) - countClassrooms(config)) : 0;
+
   const loadYears = useCallback(async () => {
     const ys = await api(`/institutions/${i.id}/years`);
     setYears(ys);
@@ -156,25 +182,28 @@ export function Structure({
     const r = await api(
       `/years/${id}/config${revisionId ? "?revisionId=" + revisionId : ""}`,
     );
+    const missingBoards = r.revision.status === "DRAFT" ? i.boards.filter((name: string) => !r.config.boards.some((b: Board) => b.name === name)) : [];
+    const loadedConfig = missingBoards.length ? { ...r.config, boards: [...r.config.boards, ...emptyConfig(missingBoards, uid).boards] } : r.config;
     setRecord(r);
     setLicense(r.license);
-    setConfig(r.config);
-    latest.current = r.config;
+    setConfig(loadedConfig);
+    latest.current = loadedConfig;
     lockRef.current = r.revision.lock;
-    changeSeq.current = 0;
+    revisionRef.current = r.revision.id;
+    changeSeq.current = missingBoards.length ? 1 : 0;
     savedSeq.current = 0;
-    setDirty(false);
-    setSaveState("Saved");
+    setDirty(!!missingBoards.length);
+    setSaveState(missingBoards.length ? "Saving new boards…" : "Saved");
     setBoardId((old) =>
-      r.config.boards.some((b: Board) => b.id === (old || sessionStorage.getItem(`plan-board-${i.id}`)))
+      loadedConfig.boards.some((b: Board) => b.id === (old || sessionStorage.getItem(`plan-board-${i.id}`)))
         ? old || sessionStorage.getItem(`plan-board-${i.id}`)!
-        : r.config.boards[0]?.id || "",
+        : loadedConfig.boards[0]?.id || "",
     );
-  }, []);
+  }, [i.id, i.boards.join("|")]);
   useEffect(() => {
     void loadYears()
       .then((ys) => {
-        if (ys.length) { const saved = sessionStorage.getItem(`plan-year-${i.id}`); setYearId(ys.some((y: RecordData) => y.id === saved) ? saved! : ys[0].id); }
+        if (ys.length) { const saved = sessionStorage.getItem(`plan-year-${i.id}`); setYearId(operationalYear(ys, saved || undefined)?.id || ys[0].id); }
       })
       .catch((e) => setError(e.message));
   }, [loadYears]);
@@ -193,6 +222,7 @@ export function Structure({
         const r = await api(`/years/${yearRef.current}/config`, "PUT", {
           config: data,
           lock: lockRef.current,
+          revisionId: revisionRef.current,
         });
         lockRef.current = r.lock;
         setLicense(r.license);
@@ -230,6 +260,25 @@ export function Structure({
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
+  const editIntentHandled = useRef(false);
+  useEffect(() => {
+    if (initialIntent !== "edit" || !record || editIntentHandled.current) return;
+    editIntentHandled.current = true;
+    if (record.revision.status === "DRAFT") return;
+    void act(async () => {
+      if (!record.year.draftRevisionId) await api(`/years/${yearId}/draft`, "POST", {});
+      await load(yearId);
+    });
+  }, [initialIntent, record, yearId, load]);
+  const historyIntentHandled = useRef(false);
+  useEffect(() => {
+    if (initialIntent !== "history" || !record || historyIntentHandled.current) return;
+    historyIntentHandled.current = true;
+    void act(async () => {
+      setHistory(await api(`/years/${yearId}/history`));
+      setModal({ type: "history" });
+    });
+  }, [initialIntent, record, yearId]);
   function change(next: Config) {
     if (!editable) return;
     latest.current = next;
@@ -284,6 +333,14 @@ export function Structure({
     if (savedSeq.current !== changeSeq.current)
       throw Error("Wait for changes to save");
   }
+  async function commitConfiguration(proposed: Config) {
+    await ensureSaved();
+    await api(`/years/${yearRef.current}/config`, "PUT", { config: proposed, lock: lockRef.current, revisionId: revisionRef.current });
+    await load(yearRef.current);
+  }
+  async function commitBoard(next: Board) {
+    await commitConfiguration({ ...latest.current, boards: latest.current.boards.map((b) => b.id === next.id ? next : b) });
+  }
   useNavigationGuard({
     label: `Structure draft for ${i.name}`,
     isDirty: () => savedSeq.current !== changeSeq.current,
@@ -303,7 +360,7 @@ export function Structure({
   return (
     <>
       <button className="text-back" onClick={() => void navigate(onBack)}>
-        <ArrowLeft size={14} /> All schools
+        <ArrowLeft size={14} /> Back to Structure Management Dashboard
       </button>
       <PageHead
         eyebrow="SCHOOL WORKSPACE"
@@ -311,6 +368,7 @@ export function Structure({
         text="Build the academic foundation, one clear decision at a time."
         action={
           <div className="row-actions">
+            <Button onClick={() => void navigate(() => setYearView(!yearView))}>{yearView ? "Back to configuration" : "Manage academic years"}</Button>
             <Button onClick={() => setModal({ type: "year" })}>
               <Plus size={15} /> Academic year
             </Button>
@@ -378,7 +436,7 @@ export function Structure({
                   void act(async () => {
                     await ensureSaved();
                     const result = await api(`/years/${yearId}/review`);
-                    setIssues(result.issues);
+                    setIssues(result.issues); setReviewImpact(result.impact);
                     setModal({ type: "review" });
                   })
                 }
@@ -434,22 +492,22 @@ export function Structure({
         </div>
       ) : (
         <>
-          {workspaceSection === "Academic Years" && <>
+          {yearView && <>
             <h2>Academic years · {i.name}</h2><p>Start fresh or copy reusable structure and recurring rules. Fixed-date exceptions are excluded from copies.</p>
             <DataTable data={years} columns={[
               { accessorKey: "label", header: "Academic year" }, { accessorKey: "startsAt", header: "Starts", cell: (c) => dateLabel(c.getValue()) }, { accessorKey: "endsAt", header: "Ends", cell: (c) => dateLabel(c.getValue()) },
               { id: "status", header: "Configuration", accessorFn: (y) => y.draftRevisionId ? y.publishedRevisionId ? "Draft changes pending" : "Draft" : "Published" },
-              { id: "open", header: "Action", cell: (c) => <Button onClick={() => void navigate(() => { setYearId(c.row.original.id); onOpenStructure?.(); })}>Open year</Button> },
+              { id: "open", header: "Action", cell: (c) => <Button onClick={() => void navigate(() => { setYearId(c.row.original.id); setYearView(false); onOpenStructure?.(); })}>Open year</Button> },
             ]} />
           </>}
-          {workspaceSection === "Review & History" && <>
+          {!yearView && workspaceSection === "Review & History" && <>
             <h2>Review & history · {record.year.label}</h2><p>Published versions stay unchanged while you edit and review a working draft.</p>
-            <div className="row-actions"><Button disabled={!editable} onClick={() => void act(async () => { await ensureSaved(); const result = await api(`/years/${yearId}/review`); setIssues(result.issues); setModal({ type: "review" }); })}>Review draft changes</Button>
+            <div className="row-actions"><Button disabled={!editable} onClick={() => void act(async () => { await ensureSaved(); const result = await api(`/years/${yearId}/review`); setIssues(result.issues); setReviewImpact(result.impact); setModal({ type: "review" }); })}>Review draft changes</Button>
             <Button onClick={() => void act(async () => { setHistory(await api(`/years/${yearId}/history`)); setModal({ type: "history" }); })}>View published versions</Button>
             <Button onClick={onOpenStructure}>Open structure workspace</Button></div>
             <ChangeReview changes={configurationChanges(record.published, config)} before={record.published} after={config} />
           </>}
-          <div hidden={workspaceSection !== "Structure Management"}>
+          <div hidden={yearView || workspaceSection !== "Structure Management"}>
           <div className="tabs structure-tabs">
             {[
               "School Registration",
@@ -460,7 +518,7 @@ export function Structure({
               <button
                 key={t}
                 className={tab === t ? "active" : ""}
-                onClick={() => void navigate(() => setTab(t))}
+                onClick={() => void navigate(() => { setTab(t); sessionStorage.setItem(`plan-structure-tab-${i.id}`, t); })}
               >
                 <span>{String(n + 1).padStart(2, "0")}</span>
                 {t}
@@ -488,6 +546,8 @@ export function Structure({
                 : "Published version · Create a draft to make changes"}
             </span>
           </div>
+          {board && ["School Registration", "Academic Sections"].includes(tab) && manualBoard !== board.id && <div className="suggested-structure-strip"><div><strong>Start with a suggested {board.name} structure</strong><p>Preview and customize grades and sections for this board. Existing records are preserved.</p></div><div className="row-actions"><Button disabled={!editable || busy} variant="dark" onClick={() => void act(async () => { await ensureSaved(); setModal({ type: "academicPreset" }); })}>Apply Suggested Structure</Button><Button onClick={() => setManualBoard(board.id)}>Customize Manually</Button></div></div>}
+          {board && manualBoard === board.id && ["School Registration", "Academic Sections"].includes(tab) && <button className="record-link" onClick={() => setManualBoard("")}>Show suggested board structure</button>}
           {tab === "School Registration" && (
             <>
               <div className="registration-card">
@@ -502,30 +562,6 @@ export function Structure({
                     Request a change <ArrowUpRight size={14} />
                   </Button>
                 </div>
-                {editable &&
-                  i.boards.some(
-                    (name: string) =>
-                      !config.boards.some((b) => b.name === name),
-                  ) && (
-                    <Button
-                      onClick={() =>
-                        change({
-                          boards: [
-                            ...config.boards,
-                            ...emptyConfig(
-                              i.boards.filter(
-                                (name: string) =>
-                                  !config.boards.some((b) => b.name === name),
-                              ),
-                              uid,
-                            ).boards,
-                          ],
-                        })
-                      }
-                    >
-                      Sync newly registered boards
-                    </Button>
-                  )}
                 <div className="registration-identity">
                   {i.logo && <img src={i.logo} alt={`${i.name} logo`} />}
                   <DetailGrid
@@ -540,6 +576,8 @@ export function Structure({
                     ]}
                   />
                 </div>
+                <div className="detail-board-list"><strong>Registered boards</strong>{i.boards.map((name: string) => <span key={name}>{name}</span>)}</div>
+                {!editable && i.boards.some((name: string) => !config.boards.some((b) => b.name === name)) && <div className="notice">New boards are registered. Create a working draft to configure them; your published structure stays unchanged.</div>}
               </div>
               {board && (
                 <>
@@ -550,13 +588,7 @@ export function Structure({
                         Grade names are unique within each registered board.
                       </p>
                     </div>
-                    <Button
-                      variant="dark"
-                      disabled={!editable}
-                      onClick={() => setModal({ type: "grade" })}
-                    >
-                      <Plus size={15} /> Add grade
-                    </Button>
+                    <div className="row-actions"><Button disabled={!editable} onClick={() => setModal({ type: "grade" })}><Plus size={15} /> Add grade</Button><Button variant="dark" disabled={!editable} onClick={() => setModal({ type: "bulkGrades" })}>Add multiple grades</Button></div>
                   </div>
                   <DataTable
                     data={board.grades}
@@ -686,107 +718,10 @@ export function Structure({
               )}
             </>
           )}
-          {tab === "Academic Sections" && board && (
-            <>
-              <div className="section-head">
-                <div>
-                  <h2>Academic sections</h2>
-                  <p>
-                    Organize grades within {board.name}. Unassigned grades can
-                    remain in a draft or incomplete active structure.
-                  </p>
-                </div>
-                <Button
-                  variant="dark"
-                  disabled={!editable}
-                  onClick={() => setModal({ type: "section" })}
-                >
-                  <Plus size={15} /> Add section
-                </Button>
-              </div>
-              <div className="section-grid">
-                {[
-                  ...board.sections,
-                  { id: "unassigned", name: "Unassigned grades" },
-                ].map((s) => (
-                  <div className="academic-card" key={s.id}>
-                    <div className="academic-card-head">
-                      <h3>{s.name}</h3>
-                      {s.id !== "unassigned" && (
-                        <div className="row-actions">
-                          <button
-                            className="icon-button"
-                            disabled={!editable}
-                            onClick={() =>
-                              setModal({ type: "section", record: s })
-                            }
-                          >
-                            <Pencil size={14} />
-                          </button>
-                          <button
-                            className="icon-button"
-                            disabled={!editable}
-                            onClick={() =>
-                              setModal({
-                                type: "delete",
-                                kind: "section",
-                                record: s,
-                              })
-                            }
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    {board.grades
-                      .filter((g) =>
-                        s.id === "unassigned"
-                          ? !g.sectionId
-                          : g.sectionId === s.id,
-                      )
-                      .map((g) => (
-                        <div className="grade-assignment" key={g.id}>
-                          <strong>{g.name}</strong>
-                          <select
-                            aria-label={`${g.name} academic section`}
-                            value={g.sectionId || ""}
-                            disabled={!editable}
-                            onChange={(e) =>
-                              updateBoard({
-                                ...board,
-                                grades: board.grades.map((x) =>
-                                  x.id === g.id
-                                    ? {
-                                        ...x,
-                                        sectionId: e.target.value || null,
-                                      }
-                                    : x,
-                                ),
-                              })
-                            }
-                          >
-                            <option value="">Unassigned</option>
-                            {board.sections.map((sec) => (
-                              <option key={sec.id} value={sec.id}>
-                                {sec.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      ))}
-                    {!board.grades.some((g) =>
-                      s.id === "unassigned"
-                        ? !g.sectionId
-                        : g.sectionId === s.id,
-                    ) && <p className="muted">No grades assigned</p>}
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+          {tab === "Academic Sections" && board && <SectionAssignments config={config} board={board} editable={!!editable} onChange={updateBoard} onEdit={(section) => setModal({ type: "section", record: section })} onDelete={(section) => setModal({ type: "delete", kind: "section", record: section })} />}
           {tab === "Classroom Setup" && board && (
             <>
+              <div className="classroom-filters"><label>Academic section<select value={classSection} onChange={(e) => { setClassSection(e.target.value); setClassGrade(""); }}><option value="">All sections</option><option value="unassigned">Unassigned grades</option>{board.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label><label>Grade<select value={classGrade} onChange={(e) => setClassGrade(e.target.value)}><option value="">All grades</option>{board.grades.filter((g) => !classSection || (classSection === "unassigned" ? !g.sectionId : g.sectionId === classSection)).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select></label><div className="classroom-counts"><span><strong>{classroomRows.length}</strong> classrooms</span><span><strong>{classroomRows.filter((c) => c.active).length}</strong> active</span><span><strong>{classroomRows.filter((c) => !c.active).length}</strong> inactive</span></div></div>
               <div className="license-banner">
                 <div>
                   <span className="license-icon">
@@ -828,13 +763,7 @@ export function Structure({
                     handled later.
                   </p>
                 </div>
-                <Button
-                  variant="dark"
-                  disabled={!editable || !board.grades.length}
-                  onClick={() => setModal({ type: "classrooms" })}
-                >
-                  <Plus size={15} /> Add classrooms
-                </Button>
+                <div className="row-actions"><Button disabled={!editable || !board.grades.length} onClick={() => setModal({ type: "newClassroom" })}>Add classroom</Button><Button variant="dark" disabled={!editable || !board.grades.length} onClick={() => setModal({ type: "classrooms" })}>Add multiple classrooms</Button></div>
               </div>
               <DataTable
                 editableFields={
@@ -909,16 +838,7 @@ export function Structure({
                       ]
                     : []
                 }
-                data={board.grades.flatMap((g) =>
-                  g.classrooms.map((c) => ({
-                    ...c,
-                    gradeId: g.id,
-                    gradeName: g.name,
-                    sectionName:
-                      board.sections.find((s) => s.id === g.sectionId)?.name ||
-                      "Unassigned",
-                  })),
-                )}
+                data={classroomRows}
                 columns={[
                   {
                     accessorKey: "name",
@@ -1008,10 +928,11 @@ export function Structure({
             <BellCalendar
               key={board.id + record.year.id}
               board={board}
+              initialView={initialIntent === "calendar" ? "Calendar" : undefined}
               config={config}
               editable={!!editable}
               onChange={updateBoard}
-              onEdit={(type, record) => setModal({ type, ...(record?.suggestedRule ? { suggestedRule: record.suggestedRule } : { record }) })}
+              onEdit={(type, record) => setModal({ type, ...(record?.suggestedRule ? { suggestedRule: record.suggestedRule, suggestedAction: record.suggestedAction, suggestedDayType: record.suggestedDayType } : { record }) })}
               onDelete={(kind, record) =>
                 setModal({ type: "delete", kind, record })
               }
@@ -1031,9 +952,9 @@ export function Structure({
       )}
       {modal && (
         <Modal
-          page={!["delete", "discard", "grade", "section", "classroom"].includes(modal.type)}
+          page={!["delete", "discard", "grade", "section", "classroom", "newClassroom"].includes(modal.type)}
           title={
-            modal.type === "year"
+            modal.type === "academicPreset" ? "Suggested board structure" : modal.type === "bulkGrades" ? "Add multiple grades" : modal.type === "newClassroom" ? "Add classroom" : modal.type === "year"
               ? "Create academic year"
               : modal.type === "review"
                 ? "Review your configuration"
@@ -1068,6 +989,7 @@ export function Structure({
           )}
           {modal.type === "grade" && board && (
             <Form
+              onCancel={close}
               fields={[
                 { key: "name", label: "Grade name", required: true },
                 {
@@ -1114,6 +1036,7 @@ export function Structure({
           )}
           {modal.type === "section" && board && (
             <Form
+              onCancel={close}
               fields={[{ key: "name", label: "Section name", required: true }]}
               initial={modal.record}
               onSubmit={async (v) => {
@@ -1143,6 +1066,7 @@ export function Structure({
           )}
           {modal.type === "classroom" && board && (
             <Form
+              onCancel={close}
               fields={[
                 { key: "name", label: "Classroom name", required: true },
                 {
@@ -1187,71 +1111,15 @@ export function Structure({
               }}
             />
           )}
-          {modal.type === "classrooms" && board && (
-            <Form
-              fields={[
-                {
-                  key: "gradeId",
-                  label: "Apply to grade",
-                  options: [
-                    {
-                      value: "ALL",
-                      label: "Every grade (same count per grade)",
-                    },
-                    ...board.grades.map((g) => ({
-                      value: g.id,
-                      label: g.name,
-                    })),
-                  ],
-                  required: true,
-                },
-                {
-                  key: "count",
-                  label: "Number of new classrooms per grade",
-                  type: "number",
-                  required: true,
-                  help: "Names will be suggested automatically: Grade 1A, Grade 1B…",
-                },
-              ]}
-              initial={{ gradeId: board.grades[0]?.id, count: 1 }}
-              onSubmit={async (v) => {
-                if (!Number.isInteger(v.count) || v.count < 1 || v.count > 100)
-                  throw Error("Enter a whole number between 1 and 100");
-                const n = structuredClone(board);
-                const targets = n.grades.filter(
-                  (g) => v.gradeId === "ALL" || g.id === v.gradeId,
-                );
-                if (
-                  Math.max(displayedUsage, license.used - institutionReserved + Math.max(otherYearUsage, localUsage, countClassrooms(config) + targets.length * v.count)) >
-                  (license.limit || 0)
-                )
-                  throw Error(
-                    "Organization classroom limit reached. Increase the shared allowance or remove classrooms.",
-                  );
-                for (const g of targets) {
-                  let index = 0;
-                  for (let n = 0; n < v.count; n++) {
-                    let name = "";
-                    do {
-                      name =
-                        g.name +
-                        String.fromCharCode(65 + (index % 26)) +
-                        (index >= 26 ? Math.floor(index / 26) : "");
-                      index++;
-                    } while (
-                      board.grades.some((x) =>
-                        x.classrooms.some((c) => c.name === name),
-                      ) ||
-                      g.classrooms.some((c) => c.name === name)
-                    );
-                    g.classrooms.push({ id: uid(), name, active: true });
-                  }
-                }
-                updateBoard(n);
-                setModal(null);
-              }}
-            />
-          )}
+          {modal.type === "academicPreset" && board && <PresetPreview yearId={yearId} board={board} lock={lockRef.current} revisionId={revisionRef.current} onCancel={close} onSaved={async (result) => { await load(yearId); setModal(null); notify(`${result.createdGrades} grades and ${result.createdSections} sections created; ${result.reusedGrades} grades reused. Other boards are unchanged.`); }} />}
+          {modal.type === "bulkGrades" && board && <BulkGrades board={board} onCancel={close} onSave={async (names, active, skipped) => {
+            await commitBoard({ ...board, grades: [...board.grades, ...names.map((name) => ({ id: uid(), name, active, sectionId: null, classrooms: [] }))] });
+            notify(`${names.length} grades created in ${board.name}${skipped ? `; ${skipped} duplicates skipped` : ""}.`); setModal(null);
+          }} />}
+          {["classrooms", "newClassroom"].includes(modal.type) && board && <ClassroomBuilder board={board} initialGrade={classGrade || undefined} single={modal.type === "newClassroom"} available={availableClassrooms} onCancel={close} onSave={async (rows, active) => {
+            await commitBoard({ ...board, grades: board.grades.map((g) => ({ ...g, classrooms: [...g.classrooms, ...rows.filter((r) => r.gradeId === g.id).map((r) => ({ id: uid(), name: r.name, active }))] })) });
+            notify(`${rows.length} classroom${rows.length === 1 ? "" : "s"} created.`); setModal(null);
+          }} />}
           {modal.type === "delete" && (
             <>
               <div className="notice error">
@@ -1266,7 +1134,9 @@ export function Structure({
                     : "Related target references will be removed from the draft."}{" "}
                 Published historical versions are preserved.
               </p>
+              {board && <ImpactPreview impact={configurationImpact(config, removeFromConfig(config, (config.boards.find((b) => modal.kind === "schedule" ? b.schedules.some((s) => s.id === modal.record.id) : modal.kind === "event" ? b.events.some((e) => e.id === modal.record.id) : b.id === board.id) || board).id, modal.kind, modal.record.id))} title="Deletion impact" />}
               <Form
+              onCancel={close}
                 fields={[
                   {
                     key: "confirmation",
@@ -1294,7 +1164,7 @@ export function Structure({
                 onClick={() =>
                   void act(async () => {
                     await ensureSaved();
-                    await api(`/years/${yearId}/draft`, "DELETE");
+                    await api(`/years/${yearId}/draft`, "DELETE", { lock: lockRef.current, revisionId: revisionRef.current });
                     await load(yearId);
                     setModal(null);
                   })
@@ -1305,26 +1175,31 @@ export function Structure({
             </>
           )}
           {modal.type === "schedule" && board && (
-            <ScheduleEditor
+            <ScheduleWizard
               boards={config.boards}
               board={board}
               ruleType={modal.suggestedRule}
+              dayType={modal.suggestedDayType}
+              onCancel={close}
+              yearId={yearId}
               initial={modal.record}
-              onSave={(s) => {
-                change({ ...config, boards: config.boards.map((b) => ({ ...b, schedules: b.id === board.id ? [...b.schedules.filter((x) => x.id !== s.id), s] : b.schedules.filter((x) => x.id !== s.id) })) });
-                setModal(null);
+              onSave={async (s) => {
+                await commitConfiguration({ ...config, boards: config.boards.map((b) => ({ ...b, schedules: b.id === board.id ? [...b.schedules.filter((x) => x.id !== s.id), s] : b.schedules.filter((x) => x.id !== s.id) })) });
+                notify("Bell schedule saved to the working draft."); setModal(null);
               }}
             />
           )}
           {modal.type === "event" && board && (
             <EventEditor
+              yearId={yearId}
+              kind={modal.suggestedAction}
               ruleType={modal.suggestedRule}
               boards={config.boards}
               board={board}
               initial={modal.record}
-              onSave={(ev) => {
-                change({ ...config, boards: config.boards.map((b) => ({ ...b, events: b.id === board.id ? [...b.events.filter((x) => x.id !== ev.id), ev] : b.events.filter((x) => x.id !== ev.id) })) });
-                setModal(null);
+              onSave={async (ev) => {
+                await commitConfiguration({ ...config, boards: config.boards.map((b) => ({ ...b, events: b.id === board.id ? [...b.events.filter((x) => x.id !== ev.id), ev] : b.events.filter((x) => x.id !== ev.id) })) });
+                notify("Calendar rule saved to the working draft."); setModal(null);
               }}
             />
           )}
@@ -1378,7 +1253,9 @@ export function Structure({
                   </div>
                 ))}
               </div>
+              <ImpactPreview impact={reviewImpact || configurationImpact(record?.published || null, config)} title="Publication impact" />
               <Form
+              onCancel={close}
                 fields={[
                   {
                     key: "summary",
@@ -1399,6 +1276,7 @@ export function Structure({
                   await api(`/years/${yearId}/publish`, "POST", {
                     summary: v.summary,
                     lock: lockRef.current,
+          revisionId: revisionRef.current,
                   });
                   await load(yearId);
                   await loadYears();
@@ -1451,499 +1329,9 @@ export function Structure({
     </>
   );
 }
-function ScopeRule({
-  boards,
-  board,
-  target,
-  rule,
-  onTarget,
-  onRule,
-}: {
-  boards?: Board[];
-  board: Board;
-  target: Target;
-  rule: Rule;
-  onTarget: (t: Target) => void;
-  onRule: (r: Rule) => void;
-}) {
-  const all = boards || [board];
-  const options = target.scope === "boards" ? all : target.scope === "sections" ? all.flatMap((b) => b.sections.map((s) => ({ ...s, name: `${b.name} / ${s.name}` })))
-    : target.scope === "section" ? board.sections
-    : target.scope === "grades" ? all.flatMap((b) => b.grades.map((g) => ({ ...g, name: `${b.name} / ${g.name}` })))
-    : target.scope === "grade" ? board.grades
-    : target.scope === "classrooms" ? all.flatMap((b) => b.grades.flatMap((g) => g.classrooms.map((c) => ({ ...c, name: `${b.name} / ${g.name} / ${c.name}` }))))
-    : board.grades.flatMap((g) => g.classrooms);
-  return (
-    <div className="scope-rule">
-      <div className="form-grid">
-        <label>
-          Apply to
-          <select
-            value={target.scope}
-            onChange={(e) =>
-              onTarget({ scope: e.target.value as Target["scope"], ids: [] })
-            }
-          >
-            {[
-              "school",
-              "boards",
-              "sections",
-              "board",
-              "section",
-              "grade",
-              "classroom",
-              "grades",
-              "classrooms",
-            ].map((s) => (
-              <option key={s} value={s}>
-                {s === "school" ? "Entire school" : s === "board" ? "Current board" : s === "boards" ? "Selected boards" : s === "sections" ? "Selected sections" : s === "grades" ? "Selected grades" : s === "classrooms" ? "Selected classrooms" : s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Date rule
-          <select
-            value={rule.type}
-            onChange={(e) =>
-              onRule({ ...rule, type: e.target.value as Rule["type"], nth: undefined, intervalWeeks: 1, anchorDate: undefined })
-            }
-          >
-            {["default", "weekly", "recurring", "date"].map((t) => (
-              <option key={t} value={t}>
-                {t === "date" ? "Specific date" : label(t)}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!["school", "board"].includes(target.scope) && (
-          <label className="span2">
-            Targets
-            <select
-              multiple
-              value={target.ids}
-              onChange={(e) =>
-                onTarget({
-                  ...target,
-                  ids: Array.from(e.target.selectedOptions).map((o) => o.value),
-                })
-              }
-            >
-              {options.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
-            <small>Use Ctrl / Command to select a group.</small>
-          </label>
-        )}
-        {rule.type === "date" && (
-          <label>
-            Specific date
-            <input
-              type="date"
-              value={rule.date || ""}
-              onChange={(e) => onRule({ ...rule, date: e.target.value })}
-            />
-          </label>
-        )}
-        {["weekly", "recurring"].includes(rule.type) && (
-          <>
-            <label className="span2">
-              Weekdays
-              <div className="weekday-picker">
-                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
-                  (d, n) => (
-                    <button
-                      type="button"
-                      key={d}
-                      className={rule.weekdays.includes(n) ? "selected" : ""}
-                      onClick={() =>
-                        onRule({
-                          ...rule,
-                          weekdays: rule.weekdays.includes(n)
-                            ? rule.weekdays.filter((x) => x !== n)
-                            : [...rule.weekdays, n],
-                        })
-                      }
-                    >
-                      {d}
-                    </button>
-                  ),
-                )}
-              </div>
-            </label>
-            {rule.type === "recurring" && (
-              <>
-                <label>
-                  Nth weekday in month
-                  <select
-                    value={rule.nth || ""}
-                    onChange={(e) =>
-                      onRule({
-                        ...rule,
-                        nth: e.target.value
-                          ? Number(e.target.value)
-                          : undefined,
-                      })
-                    }
-                  >
-                    <option value="">Every occurrence</option>
-                    {[1, 2, 3, 4, 5].map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Repeat every N weeks
-                  <input
-                    type="number"
-                    min={1}
-                    max={52}
-                    value={rule.intervalWeeks}
-                    onChange={(e) =>
-                      onRule({ ...rule, intervalWeeks: Number(e.target.value) })
-                    }
-                  />
-                </label>
-                {rule.intervalWeeks > 1 && (
-                  <label>
-                    Recurrence anchor date
-                    <input
-                      type="date"
-                      value={rule.anchorDate || ""}
-                      onChange={(e) =>
-                        onRule({ ...rule, anchorDate: e.target.value })
-                      }
-                    />
-                  </label>
-                )}
-              </>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-const defaultRule = (): Rule => ({
-  type: "default",
-  weekdays: [],
-  intervalWeeks: 1,
-});
-function ScheduleEditor({
-  ruleType,
-  boards,
-  board,
-  initial,
-  onSave,
-}: {
-  boards?: Board[];
-  board: Board;
-  ruleType?: Rule["type"];
-  initial?: Schedule;
-  onSave: (s: Schedule) => void;
-}) {
-  const [s, setS] = useState<Schedule>(
-    initial || {
-      id: uid(),
-      name: "Regular school day",
-      arrival: 480,
-      dispersal: 870,
-      target: { scope: "school", ids: [] },
-      rule: { ...defaultRule(), type: ruleType || "default", ...(ruleType === "recurring" ? { weekdays: [6], nth: 2 } : {}) },
-      slots: [],
-    },
-  );
-  const [periods, setPeriods] = useState(8);
-  const [duration, setDuration] = useState(45);
-  const [error, setError] = useState("");
-  const [durations, setDurations] = useState("");
-  const baseline = useRef(JSON.stringify(initial || s));
-  const current = useRef(s);
-  current.current = s;
-  function saveSchedule() {
-    const result = scheduleSchema.safeParse(current.current);
-    if (!result.success)
-      throw Error(result.error.issues.map((i) => i.message).join("; "));
-    if (!["school", "board"].includes(result.data.target.scope) && !result.data.target.ids.length)
-      throw Error("Choose at least one target");
-    const value = {
-      ...result.data,
-      slots: [...result.data.slots].sort((a, b) => a.start - b.start),
-    };
-    onSave(value);
-    baseline.current = JSON.stringify(current.current);
-  }
-  useNavigationGuard({
-    label: "Bell schedule editor",
-    isDirty: () => JSON.stringify(current.current) !== baseline.current,
-    save: async () => {
-      try {
-        saveSchedule();
-      } catch (e) {
-        setError((e as Error).message);
-        throw e;
-      }
-    },
-    discard: () => {
-      baseline.current = JSON.stringify(current.current);
-    },
-  });
-  const diagnostics = scheduleDiagnostics(s);
-  const affected = new Set(diagnostics.flatMap((d) => d.slotIds));
-  const updateSlot = (id: string, v: Partial<Slot>) => {
-    const slot = s.slots.find((p) => p.id === id);
-    if (slot?.kind === "routine" && ((v.start !== undefined && v.start !== slot.start) || (v.end !== undefined && v.end !== slot.end) || v.kind === "period") && !window.confirm(`Move or change the fixed routine “${slot.name}”? Auto Assign keeps its current time anchored.`)) return;
-    setS({
-      ...s,
-      slots: s.slots.map((p) => (p.id === id ? { ...p, ...v } : p)),
-    });
-  };
-  return (
-    <>
-      <div className="form-grid">
-        <label className="span2">
-          Schedule name
-          <input
-            value={s.name}
-            onChange={(e) => setS({ ...s, name: e.target.value })}
-          />
-        </label>
-        <label>
-          School day type
-          <select value={s.dayType || "full"} onChange={(e) => setS({ ...s, dayType: e.target.value as "full" | "half" })}>
-            <option value="full">Full day</option><option value="half">Half day</option>
-          </select>
-        </label>
-        <label>
-          Student arrival
-          <input
-            type="time"
-            value={time(s.arrival)}
-            onChange={(e) => setS({ ...s, arrival: minutes(e.target.value) })}
-          />
-        </label>
-        <label>
-          Student dispersal
-          <input
-            type="time"
-            value={time(s.dispersal)}
-            onChange={(e) => setS({ ...s, dispersal: minutes(e.target.value) })}
-          />
-        </label>
-      </div>
-      <ScopeRule
-        boards={boards}
-        board={board}
-        target={s.target}
-        rule={s.rule}
-        onTarget={(target) => setS({ ...s, target })}
-        onRule={(rule) => setS({ ...s, rule })}
-      />
-      <div className="auto-assign">
-        <div>
-          <h3>Auto assign periods</h3>
-          <p>
-            Fixed routines anchor the day. Teaching periods fill the available
-            time exactly.
-          </p>
-        </div>
-        <div className="form-grid">
-          <label>
-            Number of periods
-            <input
-              type="number"
-              min={1}
-              max={30}
-              value={periods}
-              onChange={(e) => setPeriods(Number(e.target.value))}
-            />
-          </label>
-          <label>
-            Default duration (minutes)
-            <input
-              type="number"
-              min={1}
-              value={duration}
-              onChange={(e) => setDuration(Number(e.target.value))}
-            />
-          </label>
-          <label className="span2">
-            Individual durations (optional)
-            <input
-              placeholder="45, 45, 40, 45…"
-              value={durations}
-              onChange={(e) => setDurations(e.target.value)}
-            />
-          </label>
-        </div>
-        <Button
-          onClick={() => {
-            try {
-              if (!Number.isInteger(periods) || periods < 1 || periods > 30)
-                throw Error("Choose 1–30 periods");
-              const d = durations
-                ? durations.split(",").map((x) => Number(x.trim()))
-                : Array(periods).fill(duration);
-              if (d.length !== periods)
-                throw Error("Provide one duration for each period");
-              setS({
-                ...s,
-                slots: autoAssign(
-                  s.arrival,
-                  s.dispersal,
-                  d,
-                  s.slots.filter((p) => p.kind === "routine"),
-                  uid,
-                ),
-              });
-              setError("");
-            } catch (e) {
-              setError((e as Error).message);
-            }
-          }}
-        >
-          <Layers size={14} /> Auto assign
-        </Button>
-      </div>
-      <div className="section-head">
-        <h3>Periods & routines</h3>
-        <div className="row-actions">
-          <Button
-            onClick={() =>
-              setS({
-                ...s,
-                slots: [
-                  ...s.slots,
-                  {
-                    id: uid(),
-                    name: "Lunch",
-                    kind: "routine",
-                    start: 720,
-                    end: 750,
-                  },
-                ],
-              })
-            }
-          >
-            <Plus size={14} /> Routine
-          </Button>
-          <Button
-            onClick={() =>
-              setS({
-                ...s,
-                slots: [
-                  ...s.slots,
-                  {
-                    id: uid(),
-                    name: `Period ${s.slots.filter((p) => p.kind === "period").length + 1}`,
-                    kind: "period",
-                    start: s.arrival,
-                    end: s.arrival + duration,
-                  },
-                ],
-              })
-            }
-          >
-            <Plus size={14} /> Period
-          </Button>
-        </div>
-      </div>
-      {diagnostics.length > 0 && (
-        <div className="schedule-diagnostics" role="status">
-          <h3>Timing issues ({diagnostics.length})</h3>
-          {diagnostics.map((d, n) => (
-            <div className="notice error" key={n}>
-              <div>
-                <strong>{d.message}</strong>
-                <small>{d.suggestion}</small>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="slots-editor">
-        {s.slots.map((p) => (
-          <div
-            className={
-              "slot-row " + p.kind + (affected.has(p.id) ? " invalid-slot" : "")
-            }
-            key={p.id}
-          >
-            <span className="slot-marker" />
-            <input
-              aria-label="Slot name"
-              value={p.name}
-              onChange={(e) => updateSlot(p.id, { name: e.target.value })}
-            />
-            <select
-              aria-label="Slot type"
-              value={p.kind}
-              onChange={(e) =>
-                updateSlot(p.id, { kind: e.target.value as Slot["kind"] })
-              }
-            >
-              <option value="period">Teaching</option>
-              <option value="routine">Routine</option>
-            </select>
-            <input
-              aria-label="Start time"
-              type="time"
-              value={time(p.start)}
-              onChange={(e) =>
-                updateSlot(p.id, { start: minutes(e.target.value) })
-              }
-            />
-            <span>to</span>
-            <input
-              aria-label="End time"
-              type="time"
-              value={time(p.end)}
-              onChange={(e) =>
-                updateSlot(p.id, { end: minutes(e.target.value) })
-              }
-            />
-            <small>{p.end - p.start}m</small>
-            <button
-              className="icon-button"
-              onClick={() => {
-                if (p.kind === "routine" && !window.confirm(`Delete the fixed routine “${p.name}”?`)) return;
-                setS({ ...s, slots: s.slots.filter((x) => x.id !== p.id) });
-              }}
-            >
-              <Trash2 size={14} />
-            </button>
-          </div>
-        ))}
-      </div>
-      <p className="muted">
-        Change a slot’s start/end to reposition it. Saved slots are sorted
-        chronologically. Incomplete schedules can be saved as drafts;
-        publication validates coverage and overlap.
-      </p>
-      {error && <div className="notice error">{error}</div>}
-      <footer className="form-footer">
-        <Button
-          variant="dark"
-          onClick={() => {
-            try {
-              saveSchedule();
-            } catch (e) {
-              setError((e as Error).message);
-            }
-          }}
-        >
-          Save schedule to draft
-        </Button>
-      </footer>
-    </>
-  );
-}
 function EventEditor({
+  yearId,
+  kind,
   ruleType,
   boards,
   board,
@@ -1953,14 +1341,16 @@ function EventEditor({
   boards?: Board[];
   board: Board;
   ruleType?: Rule["type"];
+  yearId: string;
+  kind?: Board["events"][number]["kind"];
   initial?: Board["events"][number];
-  onSave: (e: Board["events"][number]) => void;
+  onSave: (e: Board["events"][number]) => void | Promise<void>;
 }) {
   const [e, setE] = useState<Board["events"][number]>(
     initial || {
       id: uid(),
       name: "",
-      kind: "holiday",
+      kind: kind || "holiday",
       target: { scope: "school", ids: [] },
       rule: ruleType === "recurring" ? { ...defaultRule(), type: "recurring", weekdays: [6], nth: 2 } : { ...defaultRule(), type: "date", date: today() },
     },
@@ -1968,15 +1358,15 @@ function EventEditor({
   const baseline = useRef(JSON.stringify(initial || e));
   const current = useRef(e);
   current.current = e;
-  const [error, setError] = useState("");
-  const saveEvent = () => {
+  const [error, setError] = useState(""), [busy, setBusy] = useState(false);
+  const saveEvent = async () => {
     const result = eventSchema.safeParse(current.current);
     if (!result.success)
       throw Error(result.error.issues.map((i) => i.message).join("; "));
     if (!["school", "board"].includes(result.data.target.scope) && !result.data.target.ids.length)
       throw Error("Choose at least one target");
     if (result.data.overridesHoliday && (result.data.kind !== "working" || result.data.rule.type !== "date")) throw Error("A holiday reopening must be a specific-date working-day exception");
-    onSave(result.data);
+    await onSave(result.data);
     baseline.current = JSON.stringify(current.current);
   };
   useNavigationGuard({
@@ -1984,7 +1374,7 @@ function EventEditor({
     isDirty: () => JSON.stringify(current.current) !== baseline.current,
     save: async () => {
       try {
-        saveEvent();
+        await saveEvent();
       } catch (e) {
         setError((e as Error).message);
         throw e;
@@ -2026,6 +1416,7 @@ function EventEditor({
         onTarget={(target) => setE({ ...e, target })}
         onRule={(rule) => setE({ ...e, rule })}
       />
+      {["weekly", "recurring", "date"].includes(e.rule.type) && <RecurrencePreview yearId={yearId} rule={e.rule} />}
       {e.kind === "working" && <label className="checkbox-row"><input type="checkbox" checked={!!e.overridesHoliday}
         onChange={(x) => { if (x.target.checked && !window.confirm("Explicitly reopen an otherwise full holiday for these targets on this specific date?")) return; setE({ ...e, overridesHoliday: x.target.checked }); }} />
         Explicitly reopen a full holiday (specific-date rule required)</label>}
@@ -2033,14 +1424,8 @@ function EventEditor({
       <footer className="form-footer">
         <Button
           variant="dark"
-          disabled={!e.name.trim()}
-          onClick={() => {
-            try {
-              saveEvent();
-            } catch (e) {
-              setError((e as Error).message);
-            }
-          }}
+          disabled={busy || !e.name.trim()}
+          onClick={() => { setBusy(true); void saveEvent().catch((error) => setError(error.message)).finally(() => setBusy(false)); }}
         >
           Save event to draft
         </Button>

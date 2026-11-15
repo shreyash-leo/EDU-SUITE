@@ -6,7 +6,7 @@ import { WorkspaceTabs } from "../../components/workspace/tabs";
 import { dateLabel, label, type RecordData } from "../../lib/api";
 
 export type DetailKind = "organization" | "institution" | "subscription";
-export function RecordDetails({ kind, record, organizations, institutions, subscriptions, usage, onboarding, onOpen, onEdit, onOnboarding }: {
+export function RecordDetails({ kind, record, organizations, institutions, subscriptions, usage, onboarding, audit = [], onOpen, onEdit, onOnboarding }: {
   kind: DetailKind;
   record: RecordData;
   organizations: RecordData[];
@@ -14,6 +14,7 @@ export function RecordDetails({ kind, record, organizations, institutions, subsc
   subscriptions: RecordData[];
   usage: RecordData[];
   onboarding: RecordData[];
+  audit?: RecordData[];
   onOpen: (kind: DetailKind, record: RecordData) => void;
   onEdit: (kind: DetailKind, record: RecordData) => void;
   onOnboarding: (id: string) => void;
@@ -26,11 +27,14 @@ export function RecordDetails({ kind, record, organizations, institutions, subsc
   const progress = onboarding.find((o) => o.id === orgId);
   const schools = institutions.filter((i) => i.organizationId === orgId);
   const contracts = subscriptions.filter((s) => s.organizationId === orgId);
+  const administrator = org?.users?.[0] || record.users?.[0];
+  const entities = new Set([orgId, ...schools.map((s) => s.id), ...schools.flatMap((s) => (s.years || []).map((y: RecordData) => y.id)), ...contracts.map((s) => s.id)]);
+  const activity = audit.filter((event) => event.organizationId === orgId || entities.has(event.entityId));
   const roomUsage = pool?.institutions?.find((i: RecordData) => i.institutionId === record.id)?.used || 0;
   const canEdit = kind !== "institution" || record.status !== "DELETION_PENDING";
   const tabs = kind === "organization" ? [
     { value: "overview", label: "Overview" }, { value: "institutions", label: `Schools (${schools.length})` },
-    { value: "subscriptions", label: `Subscriptions (${contracts.length})` }, { value: "onboarding", label: "Onboarding" },
+    { value: "subscriptions", label: `Subscriptions (${contracts.length})` }, { value: "onboarding", label: "Onboarding" }, { value: "administrator", label: "Administrator details" }, { value: "activity", label: "Activity history" },
   ] : [{ value: "overview", label: "Overview" }, ...(kind === "institution" ? [{ value: "academic-years", label: "Academic years" }] : [])];
   return <div className="record-details">
     <div className="record-details-summary">
@@ -70,6 +74,8 @@ export function RecordDetails({ kind, record, organizations, institutions, subsc
         { accessorKey: "label", header: "Academic year" },
         { id: "status", header: "Structure status", accessorFn: (y) => y.draftRevisionId ? y.publishedRevisionId ? "Draft changes pending" : "Draft" : label(y.publishedRevision?.status || "Not started") },
       ]} />}
+      {tab === "administrator" && <><h3>Organization administrator</h3><DetailGrid record={{ name: administrator?.name || record.contactName, email: administrator?.email || record.email, phone: record.phone, account: administrator ? administrator.mustChangePassword ? "Awaiting first password change" : "Ready" : "Not activated", created: administrator ? dateLabel(administrator.createdAt) : "Not created" }} keys={["name", "email", "phone", "account", "created"]} /><p className="form-help">One administrator manages all registered schools. Credentials are shown once during activation; regenerate them only when needed.</p><Button onClick={() => onOnboarding(orgId)}>Open administrator onboarding</Button></>}
+      {tab === "activity" && <><h3>Recent organization activity</h3><p className="form-help">Changes for this organization, its schools and subscriptions from the latest platform activity.</p><DataTable data={activity} columns={[{ id: "action", header: "Action", accessorFn: (r) => label(r.action.replaceAll(".", " ").replaceAll("-", " ")) }, { accessorKey: "createdAt", header: "When", cell: (c) => new Date(c.getValue()).toLocaleString("en-IN") }]} /></>}
       {tab === "onboarding" && <><div className="record-details-cta"><div><strong>{progress?.progress || 0}% complete</strong><p>Saved progress is retained when you leave the process.</p></div><Button variant="dark" onClick={() => onOnboarding(record.id)}>Open onboarding <ArrowRight size={14} /></Button></div><ol className="onboarding-checklist">{progress?.checklist?.map((step: RecordData) => <li key={step.step}><span className={step.complete ? "checklist-number complete" : "checklist-number"}>{step.step}</span><div><strong>{step.title}</strong><p>{step.complete ? "Completed" : step.blockers.join("; ") || "Ready to validate"}</p></div></li>)}</ol></>}
     </div>
   </div>;

@@ -159,3 +159,12 @@ describe("Working-week and exceptional half-day calculations", () => {
     expect(summary.workingDays).toBe(11); expect(summary.workingDaysPerWeek).toBe(null);
   });
 });
+
+
+describe("Calendar day labels", () => {
+  it("shows half-day explicitly while retaining the resolved bell schedule", () => {
+    const { config, a, b } = setup();
+    a.schedules.push(schedule({ scope: "school", ids: [] }, { dayType: "half", rule: rule({ type: "date", date: "2026-11-16" }) }));
+    expect(calendarDay(b, selectedClassrooms(b, {}), "2026-11-16", config)).toMatchObject({ status: "half-day", results: [{ status: "half-day", schedule: { dayType: "half" } }] });
+  });
+});

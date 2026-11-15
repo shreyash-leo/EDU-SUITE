@@ -1,3 +1,4 @@
+import { academicPresetSchema, defaultAcademicPresets } from "./presets";
 import { z } from "zod";
 import {
   type Board,
@@ -111,6 +112,7 @@ export function calendarDay(
       classroomId: c.id,
       classroomName: c.name,
       ...r,
+      ...(r.status === "working" && r.schedule?.dayType === "half" ? { status: "half-day" } : {}),
       ...(invalid
         ? {
             status: "invalid",
@@ -265,6 +267,10 @@ export const platformSettingsSchema = z
     supportNotes: z.string().trim().max(1000).default(""),
     maintenanceNotice: z.string().trim().max(1000).default(""),
     defaultClassroomLimit: z.number().int().min(0).max(100000).default(40),
+    academicPresets: z.array(academicPresetSchema).max(100).refine((presets) => new Set(presets.map((p) => p.id)).size === presets.length, "Academic preset IDs must be unique").default(defaultAcademicPresets),
+    boardCatalog: z.array(z.string().trim().min(1).max(100)).min(1).max(100)
+      .refine((boards) => new Set(boards.map((b) => b.toLowerCase())).size === boards.length, "Board catalogue names must be unique")
+      .default(["CBSE", "ICSE", "ISC", "IB", "IGCSE", "MAHA SSC", "MAHA HSC", "State Board"]),
   })
   .strict();
 export const defaultPlatformSettings = platformSettingsSchema.parse({});
@@ -388,13 +394,13 @@ export function calendarSummary(config: Config, start: string, end: string, boar
       }
       const fullWeekCounts = [...weeks.values()].filter((w) => w.days === 7).map((w) => w.working);
       const workingDaysPerWeek = fullWeekCounts.length && new Set(fullWeekCounts).size === 1 ? fullWeekCounts[0] : null;
-      return { boardId: b.id, board: b.name, classroomId: c.id, classroom: c.name, ...counts, workingDaysPerWeek,
+      return { boardId: b.id, board: b.name, classroomId: c.id, classroom: c.name, ...counts, fullWorkingDays: counts.workingDays - counts.halfDays, regularWeeklyWorkingDays: 7 - new Set(b.nonWorkingDays).size, workingDaysPerWeek,
         workingWeeks: [...weeks.values()].filter((w) => w.working > 0).length,
         holidayDates };
     }));
-  const same = (key: "workingDays" | "holidays" | "halfDays" | "workingWeeks" | "workingDaysPerWeek") =>
+  const same = (key: "workingDays" | "holidays" | "halfDays" | "workingWeeks" | "workingDaysPerWeek" | "regularWeeklyWorkingDays" | "fullWorkingDays") =>
     rows.length && rows.every((row) => row[key] === rows[0][key] && JSON.stringify(row.holidayDates) === JSON.stringify(rows[0].holidayDates)) ? rows[0][key] : null;
-  return { classrooms: rows.length, mixed: rows.length > 1 && same("workingDays") === null,
+  return { classrooms: rows.length, provisional: rows.some((row) => row.unresolvedDays > 0), calendarDays: Math.floor((Date.parse(end) - Date.parse(start)) / 86400000) + 1, mixed: rows.length > 1 && same("workingDays") === null,
     workingDays: same("workingDays"), holidays: same("holidays"), halfDays: same("halfDays"),
-    workingWeeks: same("workingWeeks"), workingDaysPerWeek: same("workingDaysPerWeek"), rows };
+    workingWeeks: same("workingWeeks"), workingDaysPerWeek: same("workingDaysPerWeek"), regularWeeklyWorkingDays: rows.length && rows.every((row) => row.regularWeeklyWorkingDays === rows[0].regularWeeklyWorkingDays) ? rows[0].regularWeeklyWorkingDays : null, fullWorkingDays: same("fullWorkingDays"), rows };
 }

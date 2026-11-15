@@ -1,4 +1,7 @@
 "use client";
+import { ClientPortal, ClientSchoolDetails, type SchoolIntent } from "../features/client/portal";
+import { RegistrationRequestForm } from "../features/platform/requests";
+import { AcademicPresetCatalogue } from "../features/platform/academic-preset-catalogue";
 import { OnboardingCatalog, type OnboardingView } from "../features/platform/onboarding-catalog";
 import { RecordDetails, type DetailKind } from "../features/platform/record-details";
 import { WorkspaceHeader } from "../components/workspace/header";
@@ -133,7 +136,6 @@ const clientNav = [
   { name: "Overview", icon: LayoutDashboard },
   { name: "Schools", icon: School },
   { name: "Structure Management", icon: Layers },
-  { name: "Academic Years", icon: CalendarDays },
   { name: "Review & History", icon: History },
   { name: "Account & Subscription", icon: Receipt },
 ];
@@ -162,6 +164,8 @@ export default function App() {
   const [orgFilter, setOrgFilter] = useState("ALL");
   const [sidebar, setSidebar] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [clientView, setClientView] = useState<"directory" | "details" | "workspace">("directory");
+  const [schoolIntent, setSchoolIntent] = useState<SchoolIntent>("default");
   const [institution, setInstitution] = useState<RecordData | null>(null);
   useEffect(() => {
     if (institution) sessionStorage.setItem("plan-selected-school", institution.id);
@@ -169,9 +173,10 @@ export default function App() {
   useEffect(() => {
     if (!user || user.role === "PLATFORM_ADMIN") return;
     const selected = sessionStorage.getItem("plan-selected-school");
-    setInstitution((current) => data.institutions.find((school: RecordData) => school.id === (current?.id || selected) && school.status === "ACTIVE") || null);
+    setInstitution((current) => data.institutions.find((school: RecordData) => school.id === (current?.id || selected) && school.status !== "DELETION_PENDING") || null);
   }, [data.institutions, user?.id]);
   const [onboardId, setOnboardId] = useState("");
+  const [settingsView, setSettingsView] = useState("requests");
   const [onboardingView, setOnboardingView] = useState<OnboardingView>("list");
   const [busy, setBusy] = useState(false);
   const notify = (s: string) => {
@@ -212,22 +217,36 @@ export default function App() {
       .finally(() => setLoading(false));
   }, [refresh]);
   useWorkspaceLocation(!!user && !user.mustChangePassword && dataReady, {
-    page, school: institution?.id, onboarding: onboardId || undefined,
-    workflow: modal && !["credentials", "account", "orgStatus", "institutionAction"].includes(modal.type) ? modal.type : undefined,
+    page, intent: clientView === "workspace" ? schoolIntent : undefined, school: institution?.id, onboarding: onboardId || undefined,
+    workflow: modal && !["credentials", "account", "orgStatus", "institutionAction"].includes(modal.type) ? modal.type : user?.role !== "PLATFORM_ADMIN" && clientView !== "directory" ? clientView === "details" ? "schoolDetails" : "schoolWorkspace" : undefined,
     record: modal?.type === "credentials" ? undefined : modal?.record?.id,
     organization: modal?.organizationId,
   }, (route) => {
     const platform = user?.role === "PLATFORM_ADMIN";
     const allowed = platform ? nav : clientNav;
     setPage(allowed.some((n) => n.name === route.page) ? route.page! : platform ? "Dashboard" : "Overview");
-    setInstitution(route.school ? data.institutions.find((i: RecordData) => i.id === route.school && i.status === "ACTIVE") || null : null);
+    setInstitution(route.school ? data.institutions.find((i: RecordData) => i.id === route.school && i.status !== "DELETION_PENDING") || null : null);
     setOnboardId(platform && data.organizations.some((o: RecordData) => o.id === route.onboarding) ? route.onboarding! : "");
-    const types = platform ? ["organizationDetails", "institutionDetails", "subscriptionDetails", "organization", "institution", "subscription", "resolveRequest"] : ["request", "resolveRequest"];
+    if (!platform) {
+      setClientView(route.workflow === "schoolDetails" ? "details" : route.workflow === "schoolWorkspace" ? "workspace" : "directory");
+      setSchoolIntent(["default", "review", "calendar", "grades", "edit", "bell", "history"].includes(route.intent || "") ? route.intent as SchoolIntent : "default");
+      if (["schoolDetails", "schoolWorkspace"].includes(route.workflow || "")) { setModalState(null); return; }
+    }
+    const types = platform ? ["organizationDetails", "institutionDetails", "subscriptionDetails", "organization", "institution", "subscription", "resolveRequest", "academicPresetCatalogue"] : ["request", "schoolRequest", "resolveRequest"];
     if (!route.workflow || !types.includes(route.workflow)) { setModalState(null); return; }
-    const records = route.workflow.startsWith("organization") ? data.organizations : route.workflow.startsWith("institution") ? data.institutions : route.workflow.startsWith("subscription") ? data.subscriptions : data.requests;
+    const records = route.workflow === "schoolRequest" ? data.institutions : route.workflow.startsWith("organization") ? data.organizations : route.workflow.startsWith("institution") ? data.institutions : route.workflow.startsWith("subscription") ? data.subscriptions : data.requests;
     const record = records.find((r: RecordData) => r.id === route.record);
     setModalState(route.record && !record ? null : { type: route.workflow, record, organizationId: route.organization });
   });
+  function openClientSchool(school: RecordData, view: "details" | "workspace", intent: SchoolIntent = "default") {
+    void navigate(() => {
+      const registered = data.institutions.find((i: RecordData) => i.id === school.id) || school;
+      if (school.yearId) sessionStorage.setItem(`plan-year-${school.id}`, school.yearId);
+      sessionStorage.setItem("plan-selected-school", school.id);
+      setInstitution(registered); setClientView(view); setSchoolIntent(intent);
+      setPage(view === "details" ? "Schools" : ["review", "history"].includes(intent) ? "Review & History" : "Structure Management");
+    });
+  }
   async function action(fn: () => Promise<any>, message?: string) {
     setError("");
     setBusy(true);
@@ -400,9 +419,9 @@ export default function App() {
           else if (destination.kind === "institution") {
             const record = data.institutions.find((i: RecordData) => i.id === destination.id);
             if (admin) { setPage("Schools"); setInstitution(null); if (record) setModalState({ type: "institutionDetails", record }); }
-            else { setPage("Structure Management"); setInstitution(record || null); }
+            else { setPage("Schools"); setClientView("details"); setInstitution(record || null); }
           }
-          else { setPage(destination.name); if (admin) setInstitution(null); }
+          else { setPage(destination.name); setClientView("directory"); if (admin) setInstitution(null); }
         })} />
       <aside className={"sidebar " + (sidebar ? "open" : "")}>
         <div className="sidebar-brand"><span className="sidebar-section-title">Workspace</span><button className="icon-button sidebar-toggle" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}><ChevronLeft size={16} /></button></div>
@@ -443,6 +462,7 @@ export default function App() {
               onClick={() => {
                 void navigate(() => {
                   setPage(n.name);
+                  setClientView("directory");
                   if (n.name === "Onboarding") setOnboardId("");
                   if (admin) setInstitution(null);
                   setModalState(null);
@@ -456,14 +476,14 @@ export default function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="help-card">
+          {admin && <div className="help-card">
             <span className="tiny-orange">PLAN / V1</span>
             <strong>
               A clear structure.
               <br />A stronger school.
             </strong>
             <p>Your foundation for academic operations.</p>
-          </div>
+          </div>}
           <button
             className="account"
             onClick={() => setModal({ type: "account" })}
@@ -509,7 +529,7 @@ export default function App() {
           </button>
           <div className="breadcrumb">
             <span className="breadcrumb-root">{admin ? "Platform" : user.organizationName || "Organization"}</span> <ChevronRight size={13} />{" "}
-            <span>{institution?.name || (page === "Onboarding" && currentOrg ? currentOrg.name : page)}</span>
+            <span>{(admin || clientView !== "directory" ? institution?.name : undefined) || (page === "Onboarding" && currentOrg ? currentOrg.name : page)}</span>
           </div>
           <div className="topbar-right"><span className="workspace-role"><ShieldCheck size={14} />{admin ? "Platform administration" : "School management"}</span></div>
         </header>
@@ -703,6 +723,7 @@ export default function App() {
                       </div>
                     ),
                   },
+                  { id: "organization", header: "Parent organization", accessorFn: (r) => r.organization.name, cell: (c) => <button className="record-link" onClick={() => openOrganization(c.row.original.organizationId)}>{c.getValue()}</button> },
                   {
                     accessorKey: "boards",
                     header: "Boards",
@@ -893,6 +914,8 @@ export default function App() {
                 text="Review school registration changes and their resolution history."
                 action={!admin ? <Button variant="dark" onClick={() => setModal({ type: "request" })}><Plus size={15} /> Request registration change</Button> : undefined}
               />
+              {admin && <div className="tabs compact"><button className={settingsView === "requests" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("requests"))}>Change requests</button><button className={settingsView === "settings" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("settings"))}>Platform settings</button><button className={settingsView === "activity" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("activity"))}>Activity history</button></div>}
+              {(!admin || settingsView === "requests") && (
               <DataTable
                 data={data.requests}
                 columns={[
@@ -935,8 +958,11 @@ export default function App() {
                   },
                 ]}
               />
+              )}
               {admin && (
                 <>
+                  {settingsView === "settings" && <>
+                  <div className="record-details-cta"><div><strong>Academic structure presets</strong><p>Configure board-specific suggested sections and grades. Existing school configurations remain unchanged.</p></div><Button onClick={() => setModal({ type: "academicPresetCatalogue" })}>Edit academic presets</Button></div>
                   <div className="section-head">
                     <div>
                       <h2>Platform defaults</h2>
@@ -958,7 +984,7 @@ export default function App() {
                       </p>
                       <Form
                         key={"settings-" + data.settings.lock}
-                        initial={data.settings.values}
+                        initial={{ ...data.settings.values, boardCatalog: data.settings.values.boardCatalog.join("\n") }}
                         fields={[
                           {
                             key: "supportEmail",
@@ -966,6 +992,7 @@ export default function App() {
                             type: "email",
                           },
                           { key: "supportPhone", label: "Support phone" },
+                          { key: "boardCatalog", label: "Board catalogue", type: "textarea", required: true, help: "One supported board per line. Add missing boards here before school registration." },
                           {
                             key: "defaultClassroomLimit",
                             label:
@@ -985,8 +1012,10 @@ export default function App() {
                           },
                         ]}
                         onSubmit={async (values) => {
+                          const boardCatalog = String(values.boardCatalog).split(/\r?\n/).map((b) => b.trim()).filter(Boolean);
+                          if (!boardCatalog.length || new Set(boardCatalog.map((b) => b.toLowerCase())).size !== boardCatalog.length) throw Error("Enter at least one board, without duplicate names.");
                           await api("/settings", "PUT", {
-                            values,
+                            values: { ...values, boardCatalog },
                             lock: data.settings.lock,
                           });
                           await refresh(user);
@@ -996,11 +1025,13 @@ export default function App() {
                       />
                     </div>
                   )}
+                  </>}
+                  {settingsView === "activity" && <>
                   <h2 className="space-top">Audit history</h2>
                   <DataTable
                     data={data.audit}
                     columns={[
-                      { accessorKey: "action", header: "Action" },
+                      { id: "action", accessorFn: (r) => label(r.action.replaceAll(".", " ").replaceAll("-", " ")), header: "Action" },
                       {
                         accessorKey: "entityId",
                         header: "Record",
@@ -1019,6 +1050,7 @@ export default function App() {
                       },
                     ]}
                   />
+                  </>}
                 </>
               )}
             </>
@@ -1034,63 +1066,11 @@ export default function App() {
               { accessorKey: "startsAt", header: "Valid from", cell: (c) => dateLabel(c.getValue()) }, { accessorKey: "endsAt", header: "Valid until", cell: (c) => dateLabel(c.getValue()) },
             ]} />
           </>}
-          {!admin &&
-            !["Change requests", "Account & Subscription"].includes(page) &&
-            (institution && ["Structure Management", "Academic Years", "Review & History"].includes(page) ? (
-              <Structure
-                key={institution.id}
-                institution={institution}
-                workspaceSection={page}
-                onOpenStructure={() => setPage("Structure Management")}
-                onBack={() => { sessionStorage.removeItem("plan-selected-school"); setInstitution(null); setPage("Schools"); }}
-                notify={notify}
-              />
-            ) : (
-              <>
-                <PageHead
-                  eyebrow="ORGANIZATION WORKSPACE"
-                  title={page === "Dashboard" || page === "Overview" ? user.organizationName || "Organization overview" : page === "Schools" ? "Registered schools" : `Select a school · ${page}`}
-                  text="Schools registered by Super Admin appear here automatically. Select a school to continue."
-                />
-                {data["workspace-settings"] &&
-                  (data["workspace-settings"].supportEmail ||
-                    data["workspace-settings"].supportPhone ||
-                    data["workspace-settings"].supportNotes) && (
-                    <div className="notice">
-                      <strong>Support</strong>
-                      <span>
-                        {data["workspace-settings"].supportEmail}{" "}
-                        {data["workspace-settings"].supportPhone}{" "}
-                        {data["workspace-settings"].supportNotes}
-                      </span>
-                    </div>
-                  )}
-                {data.usage[0] && <div className={"notice organization-allowance" + (data.usage[0].overLimit || data.usage[0].contractConflict ? " amber-notice" : "")}>
-                  <strong>Shared organization allowance</strong>
-                  <span>{data.usage[0].used} / {data.usage[0].limit} classrooms · {data.usage[0].remaining} available · {data.usage[0].users} / {data.usage[0].userLimit} users</span>
-                  {data.usage[0].contractConflict && <span>Overlapping contracts require Super Admin review.</span>}
-                </div>}
-                {["Dashboard", "Overview"].includes(page) && <details className="effective-card"><summary>Organization details</summary><DetailGrid record={data["organization-profile"] || {}} keys={["name", "legalName", "contactName", "email", "phone", "address"]} /></details>}
-                {["Dashboard", "Overview"].includes(page) && <div className="client-overview-grid">
-                  <div><small>Registered schools</small><strong>{data.institutions.length}</strong></div>
-                  <div><small>Schools with published structure</small><strong>{data.institutions.filter((i: RecordData) => i.years.some((y: RecordData) => y.publishedRevisionId)).length}</strong></div>
-                  <div><small>Schools with draft changes</small><strong>{data.institutions.filter((i: RecordData) => i.years.some((y: RecordData) => y.draftRevisionId)).length}</strong></div>
-                </div>}
-                <DataTable data={data.institutions} columns={[
-                  { accessorKey: "name", header: "School", cell: (c) => <button className="record-link" disabled={c.row.original.status !== "ACTIVE"} onClick={() => { setInstitution(c.row.original); if (["Dashboard", "Overview", "Schools"].includes(page)) setPage("Structure Management"); }}>{c.getValue()}</button> },
-                  { accessorKey: "boards", header: "Boards", cell: (c) => c.getValue().join(" · ") },
-                  { accessorKey: "status", header: "Activation", cell: (c) => <Badge value={c.getValue()} /> },
-                  { id: "structure", header: "Structure", accessorFn: (r) => !r.years.length ? "Not started" : r.years[0]?.draftRevisionId && r.years[0]?.publishedRevisionId ? "Draft changes pending" : r.years[0]?.draftRevisionId ? "Draft" : label(r.years[0]?.publishedRevision?.status || "DRAFT") },
-                  { id: "action", header: "Action", cell: (c) => <Button disabled={c.row.original.status !== "ACTIVE"} onClick={() => { setInstitution(c.row.original); if (["Dashboard", "Overview", "Schools"].includes(page)) setPage("Structure Management"); }}>Open school <ArrowUpRight size={14} /></Button> },
-                ]} />
-                {!data.institutions.length && (
-                  <Empty
-                    title="No active schools"
-                    text="Your Super Admin can register and activate your schools."
-                  />
-                )}
-              </>
-            ))}
+          {!admin && !["Change requests", "Account & Subscription"].includes(page) && (
+            clientView === "workspace" && institution ? <Structure key={institution.id + schoolIntent} institution={institution} workspaceSection={page === "Review & History" ? "Review & History" : "Structure Management"} initialIntent={schoolIntent} onOpenStructure={() => { setPage("Structure Management"); setSchoolIntent("default"); }} onBack={() => { setClientView("directory"); setPage("Structure Management"); }} notify={notify} /> :
+            clientView === "details" && institution ? <ClientSchoolDetails key={institution.id} schoolId={institution.id} onBack={() => { setClientView("directory"); setPage("Schools"); }} onOpen={openClientSchool} onRequest={(record) => setModal({ type: "schoolRequest", record })} /> :
+            <ClientPortal key={user.id} page={page} userId={user.id} organizationName={user.organizationName} onOpen={openClientSchool} onAccount={() => { setClientView("directory"); setPage("Account & Subscription"); }} onDirectory={() => { setClientView("directory"); setPage("Schools"); }} />
+          )}
         </main>
       </div>
       {modal && (
@@ -1104,10 +1084,11 @@ export default function App() {
             modal.type,
           )}
         >
+          {admin && modal.type === "academicPresetCatalogue" && data.settings && <AcademicPresetCatalogue settings={data.settings} onCancel={close} onSaved={async () => { await refresh(user); setModal(null); notify("Academic preset catalogue saved."); }} />}
           {modal.type.endsWith("Details") && <RecordDetails key={modal.type + modal.record.id}
             kind={modal.type.replace("Details", "") as DetailKind} record={modal.record}
             organizations={data.organizations} institutions={data.institutions} subscriptions={data.subscriptions}
-            usage={data.usage} onboarding={data.onboarding || []}
+            usage={data.usage} onboarding={data.onboarding || []} audit={data.audit || []}
             onOpen={openDetails} onEdit={(kind, record) => setModal({ type: kind, record })} onOnboarding={openOnboarding}
           />}
           {modal.type === "organization" && (
@@ -1125,6 +1106,8 @@ export default function App() {
           )}
           {modal.type === "institution" && (
             <InstitutionForm
+              onCancel={close}
+              catalog={data.settings?.values.boardCatalog}
               organizations={data.organizations}
               initial={modal.record || { organizationId: modal.organizationId }}
               onSubmit={(v) =>
@@ -1253,6 +1236,7 @@ export default function App() {
               submit="Update password"
             />
           )}
+          {modal.type === "schoolRequest" && <RegistrationRequestForm institution={modal.record} onSaved={async () => { setModal(null); await refresh(user); notify("Registration change submitted"); }} />}
           {modal.type === "request" && (
             <RequestComposer
               institutions={data.institutions}
@@ -1311,6 +1295,8 @@ function modalTitle(type: string) {
     (
       {
         organization: "Organization registration",
+        academicPresetCatalogue: "Academic structure preset catalogue",
+        schoolRequest: "Request school registration changes",
         institution: "School registration",
         subscription: "Subscription agreement",
         credentials: "Client credentials",

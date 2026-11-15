@@ -49,11 +49,11 @@ Subscription fields: `organizationId`, unique `reference`, nonnegative `amount`,
 | POST   | `/institutions/:id/years`          | `{ label, start: "YYYY-MM-DD", end: "YYYY-MM-DD", copyFrom?: yearId }` |
 | GET    | `/years/:id/config`                | Draft if present, otherwise current publication                        |
 | GET    | `/years/:id/config?revisionId=...` | A historical revision of the same authorized year                      |
-| PUT    | `/years/:id/config`                | `{ config, lock }`; stores draft, returns incremented lock             |
+| PUT    | `/years/:id/config`                | `{ config, lock, revisionId? }`; stores draft, returns incremented lock             |
 | POST   | `/years/:id/draft`                 | `{ restoreRevisionId?: revisionId }`; creates new draft                |
-| DELETE | `/years/:id/draft`                 | Discards draft when a publication exists                               |
-| GET    | `/years/:id/review`                | `{ issues, classrooms, changes, license }`                                        |
-| POST   | `/years/:id/publish`               | `{ lock, summary }`; transactional validation/publication              |
+| DELETE | `/years/:id/draft`                 | `{ lock, revisionId? }`; discards draft when a publication exists                               |
+| GET    | `/years/:id/review`                | `{ issues, classrooms, changes, impact, license }`                                        |
+| POST   | `/years/:id/publish`               | `{ lock, summary, revisionId? }`; transactional validation/publication              |
 | GET    | `/years/:id/history`               | Published version metadata                                             |
 
 `config` is `{ boards: [...] }`. The complete, authoritative machine-checked shape is `packages/domain/src/index.ts`:
@@ -116,3 +116,45 @@ Configuration reads and draft-save responses include the same `license` organiza
 - Events support optional `overridesHoliday: boolean`. True is accepted only with `kind: "working"` and a specific-date rule. It deliberately reopens a lower-priority full holiday. Equal-priority opposing events require correction.
 
 Targets `school` and legacy singular `board` use no selected IDs. `boards`, `sections`, `grades` and `classrooms` accept one or multiple IDs in the same school revision, independently of which board owns the stored shared rule. Singular section/grade/classroom references remain local to their owner board.
+
+
+## Academic structure enhancement endpoints
+
+All routes require the existing authenticated session. Writes require Origin and CSRF headers. Year routes recheck school/organization access. No new database tables are required.
+
+| Method | Route | Input and result |
+| --- | --- | --- |
+| GET | `/academic-presets` | Configured preset catalogue; available to authenticated school users |
+| PUT | `/settings` | Existing Super Admin endpoint; `values.academicPresets` stores editable presets alongside existing values, guarded by settings lock |
+| POST | `/years/:id/preset-preview` | `{ boardId, selection, lock, revisionId? }`; no writes; counts and impact |
+| POST | `/years/:id/preset-apply` | Same input; transactional draft save, incremented lock, counts and impact |
+| POST | `/years/:id/impact` | `{ config, lock, revisionId? }`; validates ownership and returns dependency impact without writes |
+| POST | `/years/:id/rule-preview` | `{ rule }`; returns `{ dates, count, start, end }` bounded to the academic year |
+
+Preset: `{ id, name, boards: string[], sections: string[], grades: [{ name, section: string|null }] }`. Selection: `{ sections, grades, active?: true, assignExisting?: false }`. Matching existing names ignores capitalization; existing UUIDs, statuses and classrooms survive. By default existing grade assignments also survive. Removed suggestions never delete existing records. Only the selected board changes.
+
+Recurrence rules additionally accept inclusive optional `startsOn` and `endsOn` ISO dates. Weekly, selected-weekday and nth-weekday recurrence retain existing precedence. Missing fifth occurrences produce no match. Year copy excludes specific-date and date-limited rules. Pattern preview lists matching dates; effective calendar resolution still applies holidays, specificity and conflict rules.
+
+Impact: `{ created, updated, removed, boards, grades, sections, classrooms, schedules, calendarRules, byEntity, changes }`; named items include stable logical `id` and board name. Affected dependency lists are not deletion counts.
+
+Calendar summaries additionally expose `calendarDays`, `provisional`, `fullWorkingDays`, `regularWeeklyWorkingDays`. Half-days count as one working date and are reported separately. `workingWeeks` counts Monday–Sunday weeks containing at least one effective working date, including partial weeks. `workingDaysPerWeek` is the observed count only when all complete weeks agree; regularWeeklyWorkingDays is the configured weekly pattern. Mixed classroom calendars retain per-classroom totals rather than adding overlapping school dates.
+
+Clients now send both revision ID and lock on saves, publication, preset operations and discard. Revision ID remains optional for existing API clients, but the web client supplies it to detect a replaced draft even when numeric lock values coincide. Discard now requires its lock body. Published/history writes are rejected at the storage boundary.
+
+
+## Organization client portal
+
+Both routes require an authenticated `ORG_ADMIN` session. The organization comes from the session, never a caller-provided organization ID. Inactive school identity may be viewed; editing remains protected by existing active-school guards. Pending-deletion schools are excluded.
+
+| Method | Route | Parameters / response |
+| --- | --- | --- |
+| GET | `/client-portal` | Query `search`, `board`, `status`, `sort=name|updated`, `page>=1`, `pageSize=1..50`, optional `schoolId`/`yearId` retained selection |
+| GET | `/institutions/:id/portal` | Optional `yearId`; read-only school details, available years, represented year, board/grade/classroom details, calendar summary, latest 50 published history entries |
+
+Directory response: `{ rows, total, page, pageSize, metrics, attention, boards, activity, license, subscriptions, contract, basis }`. Status filter accepts `NOT_STARTED`, `DRAFT`, `INCOMPLETE_ACTIVE`, `ACTIVE`, `DRAFT_CHANGES_PENDING`, `CONFIGURED`, `IN_PROGRESS`, `ATTENTION` or empty. CONFIGURED means a publication exists; IN_PROGRESS means no publication (Not Started/Draft); ATTENTION includes all states except Active. Metrics are computed before directory filters. Every school is counted once per status using the represented academic year. Row `classroomCount` is the displayed draft/publication count, separate from licensing's organization-wide reservation accounting.
+
+Year selection: valid explicit school/year, otherwise current date-bounded year, latest started year, then earliest future year. Invalid/foreign year selections never grant access. Detail response: `{ school, year, status, boards, history, calendar, hasGrades, hasCalendar, basis }`. Detailed edit/restore/publish actions still use existing year/configuration APIs and concurrency controls.
+
+Draft saves now audit `structure.updated` with stable-ID record changes. `Revision.updatedAt` is persisted for save ordering; existing snapshots retain their publication/creation time through migration backfill.
+
+Directory query `schoolStatus` additionally accepts empty, `ACTIVE` or `INACTIVE`. It is independent of the selected academic year's structure `status`, applies before SQL pagination, and combines with search/board filters. School Details/editor frontend routes use separate workflow names and an allowlisted intent; these view names grant no backend permissions.

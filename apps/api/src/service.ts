@@ -1,3 +1,6 @@
+import { clientDirectory, clientSchool } from "./client-portal";
+import { configurationImpact, assertStableOwnership } from "../../../packages/domain/src/impact";
+import { applyAcademicPreset, presetSelectionSchema } from "../../../packages/domain/src/presets";
 import {
   configurationChanges,
   onboardingChecklist,
@@ -20,6 +23,8 @@ import * as argon2 from "./password";
 import { z } from "zod";
 import {
   configSchema,
+  recurrenceDates,
+  ruleSchema,
   boardSchema,
   copyYear,
   countClassrooms,
@@ -296,8 +301,17 @@ export class AppService {
         _count: { select: { institutions: true } },
         subscriptions: { select: { status: true } },
         institutions: { select: { id: true, name: true } },
+        users: { select: { id: true, name: true, email: true, mustChangePassword: true, createdAt: true } },
       },
     });
+  }
+  async clientPortal(a: Actor, query: unknown) {
+    if (a.role !== "ORG_ADMIN" || !a.organizationId) throw new ForbiddenException("Organization account required");
+    return clientDirectory(a.organizationId, query);
+  }
+  async clientSchool(a: Actor, id: string, selected?: string) {
+    if (a.role !== "ORG_ADMIN" || !a.organizationId) throw new ForbiddenException("Organization account required");
+    return clientSchool(a.organizationId, id, selected);
   }
   async dashboard(a: Actor) {
     this.admin(a);
@@ -358,7 +372,7 @@ export class AppService {
       include: {
         organization: { select: { name: true } },
 
-        years: {
+        years: a.role === "PLATFORM_ADMIN" ? {
           orderBy: { startsAt: "desc" },
           select: {
             id: true,
@@ -367,7 +381,7 @@ export class AppService {
             draftRevisionId: true,
             publishedRevision: { select: { status: true } },
           },
-        },
+        } : false,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -392,6 +406,20 @@ export class AppService {
       const result = id
         ? await tx.institution.update({ where: { id }, data })
         : await tx.institution.create({ data: { ...data, organizationId } });
+      // Registration owns affiliations. Extend editable drafts only; publications remain immutable.
+      if (id) {
+        const years = await tx.academicYear.findMany({ where: { institutionId: id, draftRevisionId: { not: null } }, orderBy: { id: "asc" } });
+        for (const year of years) {
+          await tx.$queryRaw`SELECT id FROM "AcademicYear" WHERE id=${year.id} FOR UPDATE`;
+          const draft = await readConfig(tx, year.draftRevisionId!);
+          const missing = result.boards.filter((name) => !draft.boards.some((board) => board.name === name));
+          if (missing.length) {
+            draft.boards.push(...emptyConfig(missing, randomUUID).boards);
+            await writeConfig(tx, year.draftRevisionId!, draft);
+            await tx.revision.update({ where: { id: year.draftRevisionId! }, data: { lock: { increment: 1 } } });
+          }
+        }
+      }
       await audit(
         tx,
         a,
@@ -399,7 +427,7 @@ export class AppService {
         result.id,
       );
       return result;
-    });
+    }, { timeout: 30000 });
   }
   async institutionAction(a: Actor, id: string, body: unknown) {
     this.admin(a);
@@ -718,8 +746,8 @@ export class AppService {
     }, { timeout: 30000 });
   }
   async saveConfig(a: Actor, yearId: string, body: unknown) {
-    const { config, lock } = z
-      .object({ config: configSchema, lock: z.number().int() })
+    const { config, lock, revisionId } = z
+      .object({ config: configSchema, lock: z.number().int(), revisionId: z.string().uuid().optional() })
       .parse(body);
     return db.$transaction(
       async (tx) => {
@@ -737,6 +765,7 @@ export class AppService {
         const r = await tx.revision.findUniqueOrThrow({
           where: { id: y.draftRevisionId },
         });
+        if (revisionId && r.id !== revisionId) throw new ConflictException("The working draft was replaced. Reload before saving.");
         if (r.lock !== lock)
           throw new ConflictException(
             "This draft changed elsewhere. Reload before saving.",
@@ -749,6 +778,7 @@ export class AppService {
             "Boards must match the registered affiliations",
           );
         const old = await readConfig(tx, r.id);
+        try { assertStableOwnership(old, config); } catch (error) { throw new BadRequestException((error as Error).message); }
         await assertClassroomChange(tx, i.organizationId, yearId, old, config);
         const refs = review(
           config,
@@ -765,10 +795,46 @@ export class AppService {
           where: { id: r.id },
           data: { lock: { increment: 1 } },
         });
+        const changes = configurationChanges(old, config);
+        if (changes.length) await audit(tx, a, "structure.updated", yearId, { revisionId: r.id, changes });
         return { lock: r.lock + 1, savedAt: new Date(), license: await organizationUsage(tx, i.organizationId) };
       },
       { timeout: 30000 },
     );
+  }
+  async academicPresets() {
+    const saved = await db.platformSetting.findUnique({ where: { id: "platform" } });
+    return (saved ? platformSettingsSchema.parse(saved.values) : defaultPlatformSettings).academicPresets;
+  }
+  async presetPreview(a: Actor, yearId: string, body: unknown, apply = false) {
+    const input = z.object({ boardId: z.string().uuid(), selection: presetSelectionSchema, lock: z.number().int().min(0), revisionId: z.string().uuid().optional() }).parse(body);
+    const saved = await this.config(a, yearId);
+    if (!saved.year.draftRevisionId || saved.revision.status !== "DRAFT") throw new BadRequestException("Create a working draft before applying suggested structure");
+    if (input.revisionId && input.revisionId !== saved.revision.id) throw new ConflictException("The working draft was replaced. Reload the suggestions.");
+    if (saved.revision.lock !== input.lock) throw new ConflictException("This draft changed. Reload the suggested structure preview before applying it.");
+    let result: ReturnType<typeof applyAcademicPreset>;
+    try { result = applyAcademicPreset(saved.config, input.boardId, input.selection, randomUUID); } catch (error) { throw new BadRequestException((error as Error).message); }
+    const impact = configurationImpact(saved.config, result.config);
+    if (apply) {
+      const savedResult = await this.saveConfig(a, yearId, { config: result.config, lock: input.lock, revisionId: saved.revision.id });
+      return { ...savedResult, createdGrades: result.createdGrades, reusedGrades: result.reusedGrades, createdSections: result.createdSections, impact };
+    }
+    return { createdGrades: result.createdGrades, reusedGrades: result.reusedGrades, createdSections: result.createdSections, impact, lock: saved.revision.lock };
+  }
+  async impactPreview(a: Actor, yearId: string, body: unknown) {
+    const input = z.object({ config: configSchema, lock: z.number().int().min(0), revisionId: z.string().uuid().optional() }).parse(body);
+    const saved = await this.config(a, yearId);
+    if (!saved.year.draftRevisionId || saved.revision.status !== "DRAFT") throw new BadRequestException("Create a working draft before previewing changes");
+    if (input.revisionId && input.revisionId !== saved.revision.id) throw new ConflictException("The working draft was replaced. Reload before previewing changes.");
+    if (saved.revision.lock !== input.lock) throw new ConflictException("This draft changed. Reload before previewing changes.");
+    try { assertStableOwnership(saved.config, input.config); } catch (error) { throw new BadRequestException((error as Error).message); }
+    return configurationImpact(saved.config, input.config);
+  }
+  async rulePreview(a: Actor, yearId: string, body: unknown) {
+    const year = await this.year(a, yearId);
+    const { rule } = z.object({ rule: ruleSchema }).parse(body);
+    const dates = recurrenceDates(rule, year.startsAt.toISOString().slice(0, 10), year.endsAt.toISOString().slice(0, 10));
+    return { dates, count: dates.length, start: year.startsAt.toISOString().slice(0, 10), end: year.endsAt.toISOString().slice(0, 10) };
   }
   async preview(a: Actor, yearId: string, body: unknown) {
     const y = await this.year(a, yearId);
@@ -817,15 +883,17 @@ export class AppService {
     if (license.overLimit) issues.push({ severity: "warning", message: `Organization exceeds its classroom allowance (${license.used} / ${license.limit}). Additional classrooms are blocked.` });
     return {
       changes: configurationChanges(published, config),
+      impact: configurationImpact(published, config),
       issues,
       classrooms: countClassrooms(config),
       license,
     };
   }
   async publish(a: Actor, yearId: string, body: unknown) {
-    const { lock, summary } = z
+    const { lock, summary, revisionId } = z
       .object({
         lock: z.number().int(),
+        revisionId: z.string().uuid().optional(),
         summary: z.string().trim().min(1).max(1000),
       })
       .parse(body);
@@ -843,6 +911,8 @@ export class AppService {
         const r = await tx.revision.findUniqueOrThrow({
           where: { id: y.draftRevisionId },
         });
+        if (r.status !== "DRAFT") throw new ConflictException("Create a working draft before publishing.");
+        if (revisionId && r.id !== revisionId) throw new ConflictException("The working draft was replaced. Review it again before publishing.");
         if (r.lock !== lock)
           throw new ConflictException("Review the latest saved draft");
         const s = await activeContract(tx, i.organizationId);
@@ -910,7 +980,8 @@ export class AppService {
       orderBy: { sequence: "desc" },
     });
   }
-  async discard(a: Actor, yearId: string) {
+  async discard(a: Actor, yearId: string, body: unknown) {
+    const { lock, revisionId } = z.object({ lock: z.number().int().min(0), revisionId: z.string().uuid().optional() }).parse(body);
     return db.$transaction(async (tx) => {
       const initialYear = await this.year(a, yearId, tx);
       const owner = await this.institution(a, initialYear.institutionId, tx);
@@ -921,6 +992,9 @@ export class AppService {
         throw new BadRequestException(
           "Only changes to a published configuration can be discarded",
         );
+      const draft = await tx.revision.findUniqueOrThrow({ where: { id: y.draftRevisionId } });
+      if (revisionId && draft.id !== revisionId) throw new ConflictException("The working draft was replaced. Reload before discarding it.");
+      if (draft.lock !== lock) throw new ConflictException("This draft has newer changes. Reload before discarding it.");
       await tx.academicYear.update({
         where: { id: yearId },
         data: { draftRevisionId: null },

@@ -256,7 +256,7 @@ export function DataTable({
         {selected.length > 0 && allActions.length > 0 && (
           <div className="row-actions">
             <span>{selected.length} selected</span>
-            <select
+            {allActions.length > 1 && <select
               aria-label="Bulk action"
               value={actionIndex}
               onChange={(e) => {
@@ -270,16 +270,16 @@ export function DataTable({
                   {a.label}
                 </option>
               ))}
-            </select>
+            </select>}
             <Button
-              disabled={actionIndex === "" || busy}
+              disabled={(allActions.length > 1 && actionIndex === "") || busy}
               onClick={() => {
-                const n = Number(actionIndex);
+                const n = allActions.length === 1 ? 0 : Number(actionIndex);
                 if (allActions[n].confirm) setConfirmation(n);
                 else void run(n);
               }}
             >
-              Apply
+              {allActions.length === 1 ? allActions[0].label : "Apply"}
             </Button>
           </div>
         )}

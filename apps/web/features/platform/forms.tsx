@@ -88,16 +88,22 @@ import {
   DetailGrid,
   type Field,
 } from "../../components/ui";
+import { BoardAffiliations } from "./board-affiliations";
 export function InstitutionForm({
+  onCancel,
+  catalog = ["CBSE", "ICSE", "ISC", "IB", "IGCSE", "MAHA SSC", "MAHA HSC", "State Board"],
   organizations,
   initial = {},
   onSubmit,
 }: {
+  onCancel?: () => void;
+  catalog?: string[];
   organizations: RecordData[];
   initial?: RecordData;
   onSubmit: (v: RecordData) => Promise<void>;
 }) {
   const [logo, setLogo] = useState(initial.logo || "");
+  const [boards, setBoards] = useState<string[]>(initial.boards || []);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   return (
@@ -147,10 +153,12 @@ export function InstitutionForm({
         </div>
       </div>
       {uploadError && <div className="notice error">{uploadError}</div>}
+      <BoardAffiliations catalog={catalog} selected={boards} onChange={setBoards} locked={!!initial.years?.length} protectedBoards={initial.boards || []} years={initial.years?.map((y: RecordData) => y.label)} />
       <Form
-        extraDirty={logo !== (initial.logo || "")}
-        onDiscard={() => setLogo(initial.logo || "")}
-        initial={{ ...initial, boards: initial.boards?.join(", ") || "CBSE" }}
+        onCancel={onCancel}
+        extraDirty={logo !== (initial.logo || "") || JSON.stringify(boards) !== JSON.stringify(initial.boards || [])}
+        onDiscard={() => { setLogo(initial.logo || ""); setBoards(initial.boards || []); }}
+        initial={initial}
         fields={[
           {
             key: "organizationId",
@@ -161,12 +169,6 @@ export function InstitutionForm({
           },
           { key: "name", label: "School name", required: true },
           { key: "registration", label: "Registration number", required: true },
-          {
-            key: "boards",
-            label: "Board affiliations",
-            required: true,
-            help: "Comma-separated, for example CBSE, ICSE, IB",
-          },
           { key: "address", label: "School address", section: "School contact" },
           { key: "officer", label: "School relation officer" },
           { key: "phone", label: "Contact number" },
@@ -174,13 +176,11 @@ export function InstitutionForm({
         ]}
         onSubmit={async (v) => {
           if (uploading) throw Error("Wait for logo upload");
+          if (!boards.length) throw Error("Add at least one board affiliation before saving.");
           await onSubmit({
             ...v,
             logo,
-            boards: v.boards
-              .split(",")
-              .map((s: string) => s.trim())
-              .filter(Boolean),
+            boards,
           });
         }}
       />

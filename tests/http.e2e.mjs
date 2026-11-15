@@ -127,6 +127,19 @@ test(
       "POST",
       { label: "2026–27", start: "2026-04-01", end: "2027-03-31" },
     );
+    const directory = await clientPortal.request("/client-portal?pageSize=1&board=CBSE");
+    const activeSchools=await clientPortal.request("/client-portal?schoolStatus=ACTIVE&board=CBSE");
+    assert.equal(activeSchools.total,1);
+    const inactiveSchools=await clientPortal.request("/client-portal?schoolStatus=INACTIVE");
+    assert.equal(inactiveSchools.total,0);
+    assert.equal(directory.total, 1); assert.equal(directory.rows[0].id, school.id);
+    assert.equal(directory.rows[0].structureStatus, "DRAFT");
+    assert.equal(directory.metrics.total, 2);
+    assert.equal(directory.metrics.inProgress, 2);
+    const details = await clientPortal.request(`/institutions/${school.id}/portal?yearId=${year.id}`);
+    assert.equal(details.year.id, year.id); assert.equal(details.school.name, school.name);
+    await assert.rejects(() => clientPortal.request(`/institutions/${randomUUID()}/portal`), (e) => e.status === 404);
+    await assert.rejects(() => platform.request("/client-portal"), (e) => e.status === 403);
     const draft = await clientPortal.request(`/years/${year.id}/config`);
     const config = draft.config;
     assert.equal(config.boards.length, 2);
@@ -151,6 +164,16 @@ test(
     const published = await clientPortal.request(`/years/${year.id}/config`);
     assert.equal(published.config.boards[0].grades[0].classrooms.length, 1);
     assert.equal(published.revision.status, "INCOMPLETE_ACTIVE");
+    const activeDirectory = await clientPortal.request("/client-portal?status=INCOMPLETE_ACTIVE");
+    assert.equal(activeDirectory.total, 1);
+    assert.equal(activeDirectory.metrics.configured, 1);
+    assert.equal(activeDirectory.metrics.inProgress, 1);
+    assert.equal(activeDirectory.rows[0].classroomCount, 1);
+    assert.ok(activeDirectory.activity.some((entry) => entry.action === "structure.published" && entry.schoolId === school.id));
+    const activeDetails = await clientPortal.request(`/institutions/${school.id}/portal`);
+    assert.equal(activeDetails.boards[0].grades, 1);
+    assert.equal(activeDetails.history.length, 1);
+    assert.equal(activeDetails.hasCalendar, false);
     const secondYear = await clientPortal.request(`/institutions/${secondSchool.id}/years`, "POST", { label: "2026–27", start: "2026-04-01", end: "2027-03-31" });
     const secondDraft = await clientPortal.request(`/years/${secondYear.id}/config`);
     secondDraft.config.boards[0].grades = [{ id: randomUUID(), name: "Grade 1", active: true, sectionId: null, classrooms: [{ id: randomUUID(), name: "1A", active: true }, { id: randomUUID(), name: "1B", active: false }] }];

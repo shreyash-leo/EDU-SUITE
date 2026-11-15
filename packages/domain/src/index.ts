@@ -25,8 +25,12 @@ export const ruleSchema = z
     nth: z.number().int().min(1).max(5).optional(),
     intervalWeeks: z.number().int().min(1).max(52).default(1),
     anchorDate: z.string().optional(),
+    startsOn: z.string().optional(),
+    endsOn: z.string().optional(),
   })
   .superRefine((v, c) => {
+    for (const date of [v.startsOn, v.endsOn]) if (date !== undefined && !validDate(date)) c.addIssue({ code: "custom", message: "Use a valid start/end date for the recurring range" });
+    if (v.startsOn && v.endsOn && v.startsOn > v.endsOn) c.addIssue({ code: "custom", message: "The recurring range must end on or after its start" });
     if (v.type === "date" && (!v.date || !validDate(v.date)))
       c.addIssue({
         code: "custom",
@@ -208,6 +212,7 @@ export function autoAssign(
   return output;
 }
 export function matches(rule: Rule, date: string) {
+  if (!validDate(date) || rule.startsOn && date < rule.startsOn || rule.endsOn && date > rule.endsOn) return false;
   const d = new Date(`${date}T00:00:00Z`);
   const weekday = d.getUTCDay();
   if (rule.type === "date") return date === rule.date;
@@ -440,8 +445,8 @@ export function copyYear(c: Config): Config {
   return {
     boards: structuredClone(c).boards.map((b) => ({
       ...b,
-      events: b.events.filter((e) => e.rule.type !== "date"),
-      schedules: b.schedules.filter((s) => s.rule.type !== "date"),
+      events: b.events.filter((e) => e.rule.type !== "date" && !e.rule.startsOn && !e.rule.endsOn),
+      schedules: b.schedules.filter((s) => s.rule.type !== "date" && !s.rule.startsOn && !s.rule.endsOn),
     })),
   };
 }
@@ -504,4 +509,13 @@ export function removeFromConfig(config: Config, boardId: string, kind: string, 
     b.schedules = prune(b.schedules); b.events = prune(b.events);
   }
   return next;
+}
+
+
+export function recurrenceDates(rule: Rule, start: string, end: string) {
+  ruleSchema.parse(rule);
+  if (!validDate(start) || !validDate(end) || end < start || Date.parse(end) - Date.parse(start) > 550 * 86400000) throw Error("Choose a valid academic-year range of at most 550 days");
+  const dates: string[] = [];
+  for (let t = Date.parse(start); t <= Date.parse(end); t += 86400000) { const date = new Date(t).toISOString().slice(0, 10); if (matches(rule, date)) dates.push(date); }
+  return dates;
 }

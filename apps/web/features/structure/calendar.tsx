@@ -19,6 +19,7 @@ import { Badge, Button, DataTable, Empty } from "../../components/ui";
 import { api, dateLabel, time, type RecordData } from "../../lib/api";
 export function BellCalendar({
   board: b,
+  initialView = "Default Bell Time",
   config,
   editable,
   onChange,
@@ -27,6 +28,7 @@ export function BellCalendar({
   year,
 }: {
   board: Board;
+  initialView?: string;
   config: Config;
   editable: boolean;
   onChange: (b: Board) => void;
@@ -34,7 +36,7 @@ export function BellCalendar({
   onDelete: (kind: string, record: RecordData) => void;
   year: RecordData;
 }) {
-  const [view, setView] = useState("Default Bell Time"),
+  const [view, setView] = useState(initialView),
     [sectionId, setSection] = useState(""),
     [gradeId, setGrade] = useState(""),
     [classroomId, setClassroom] = useState(""),
@@ -44,6 +46,10 @@ export function BellCalendar({
     [mode, setMode] = useState("grid"),
     [previewPage, setPreviewPage] = useState(0);
   const [schedulePage, setSchedulePage] = useState(0);
+  const [ruleAction, setRuleAction] = useState("schedule"), [calendarAction, setCalendarAction] = useState("holiday");
+  const whenLabel = (rule: Board["events"][number]["rule"]) => rule.type === "date" ? rule.date : rule.type === "default" ? "Every working day" : `${rule.nth ? ["", "First", "Second", "Third", "Fourth", "Fifth"][rule.nth] + " " : "Every "}${rule.weekdays.map((d) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d]).join(", ")}${rule.intervalWeeks > 1 ? ` · every ${rule.intervalWeeks} weeks` : ""}`;
+  const targetName = (target: Target) => target.scope === "school" ? "Entire school" : target.scope === "board" ? b.name : target.ids.map((id) => config.boards.flatMap((board) => [board, ...board.sections, ...board.grades, ...board.grades.flatMap((g) => g.classrooms)]).find((x) => x.id === id)?.name || "Unavailable target").join(", ");
+
   useEffect(() => setSchedulePage(0), [view, sectionId, gradeId, classroomId]);
   const grades = b.grades.filter(
     (g) => !sectionId || g.sectionId === sectionId,
@@ -120,23 +126,10 @@ export function BellCalendar({
       {previewError && <div className="notice error" role="alert">{previewError}</div>}
       {previewLoading && !["Default Bell Time", "Advanced Scheduling"].includes(view) && <p role="status">Resolving calendar…</p>}
       <div className="bell-subnav">
-        {["Default Bell Time", "Advanced Scheduling", "Calendar", "Effective preview", "Year summary"].map((v) => (
-          <button
-            key={v}
-            className={view === v ? "selected" : ""}
-            onClick={() => setView(v)}
-          >
-            {["Default Bell Time", "Advanced Scheduling"].includes(v) ? (
-              <Clock size={16} />
-            ) : v === "Calendar" ? (
-              <CalendarDays size={16} />
-            ) : (
-              <Search size={16} />
-            )}{" "}
-            {v}
-          </button>
-        ))}
+        {[["Default Bell Time", "Default Bell Schedule"], ["Advanced Scheduling", "Advanced Scheduling"], ["Calendar", "Academic Calendar"]].map(([value, name]) => <button key={value} className={(value === "Calendar" ? !["Default Bell Time", "Advanced Scheduling"].includes(view) : view === value) ? "selected" : ""} onClick={() => setView(value)}>{value === "Calendar" ? <CalendarDays size={16} /> : <Clock size={16} />}{name}</button>)}
       </div>
+      {!["Default Bell Time", "Advanced Scheduling"].includes(view) && <div className="tabs compact calendar-view-tabs">{[["Calendar", "Monthly calendar"], ["Effective preview", "Classroom date preview"], ["Year summary", "Year summary"]].map(([value, name]) => <button key={value} className={view === value ? "active" : ""} onClick={() => setView(value)}>{name}</button>)}</div>}
+      <details className="filter-disclosure"><summary>Target filters · {targetLabel}</summary>
       <div className="calendar-target-filters">
         <label>
           Academic section
@@ -204,12 +197,13 @@ export function BellCalendar({
           Clear target filters
         </Button>
       </div>
+      </details>
       <p className="form-help">
         Showing {targetLabel} · {rooms.length} classroom
         {rooms.length === 1 ? "" : "s"}. Group results show mixed days when
         classrooms follow different rules.
       </p>
-      {["Default Bell Time", "Advanced Scheduling"].includes(view) && (
+      {view === "Default Bell Time" && (
         <>
           <div className="section-head">
             <div>
@@ -221,7 +215,7 @@ export function BellCalendar({
             <Button
               variant="dark"
               disabled={!editable}
-              onClick={() => onEdit("schedule", { suggestedRule: view === "Advanced Scheduling" ? "recurring" : "default" })}
+              onClick={() => onEdit("schedule", { suggestedRule: "default" })}
             >
               <Plus size={15} /> Add schedule
             </Button>
@@ -290,14 +284,19 @@ export function BellCalendar({
           )}
         </>
       )}
-      {["Default Bell Time", "Advanced Scheduling"].includes(view) && schedules.length > 5 && <div className="pagination"><span>{schedules.length} schedules</span><div className="row-actions"><Button disabled={schedulePage === 0} onClick={() => setSchedulePage(schedulePage - 1)}>Previous schedules</Button><Button disabled={(schedulePage + 1) * 5 >= schedules.length} onClick={() => setSchedulePage(schedulePage + 1)}>Next schedules</Button></div></div>}
+      {view === "Default Bell Time" && schedules.length > 5 && <div className="pagination"><span>{schedules.length} schedules</span><div className="row-actions"><Button disabled={schedulePage === 0} onClick={() => setSchedulePage(schedulePage - 1)}>Previous schedules</Button><Button disabled={(schedulePage + 1) * 5 >= schedules.length} onClick={() => setSchedulePage(schedulePage + 1)}>Next schedules</Button></div></div>}
       {view === "Advanced Scheduling" && <>
-        <div className="section-head"><div><h2>Calendar actions</h2><p>Set recurring closures, half-days or explicit working dates. Half-days require a matching half-day schedule.</p></div><Button disabled={!editable} onClick={() => onEdit("event", { suggestedRule: "recurring" })}>Add calendar action</Button></div>
-        <DataTable data={events.filter((e) => e.rule.type !== "default")} columns={[
-          { accessorKey: "name", header: "Action" }, { accessorKey: "kind", header: "Day type" },
-          { id: "scope", header: "Target", accessorFn: (e) => e.target.scope },
-          { id: "rule", header: "When", accessorFn: (e) => e.rule.type === "date" ? e.rule.date : `${e.rule.type}${e.rule.nth ? ` · occurrence ${e.rule.nth}` : ""}` },
-          { id: "edit", header: "Actions", cell: (c) => <div className="row-actions"><Button disabled={!editable} onClick={() => onEdit("event", c.row.original)}>Edit</Button><Button disabled={!editable} onClick={() => onDelete("event", c.row.original)}>Delete</Button></div> },
+        <div className="section-head"><div><h2>Advanced scheduling rules</h2><p>Choose who is affected, when the rule applies and what should happen.</p></div><div className="row-actions"><select aria-label="New rule action" value={ruleAction} onChange={(e) => setRuleAction(e.target.value)}><option value="schedule">Different bell schedule</option><option value="half-day">Half-day schedule</option><option value="holiday">Full holiday</option><option value="working">Special working day</option></select><Button variant="dark" disabled={!editable} onClick={() => onEdit(["schedule", "half-day"].includes(ruleAction) ? "schedule" : "event", { suggestedRule: "recurring", suggestedAction: ruleAction, suggestedDayType: ruleAction === "half-day" ? "half" : "full" })}>Add rule</Button></div></div>
+        <DataTable data={[
+          ...rules.schedules.filter((s) => s.rule.type !== "default" && applies(s.target)).map((s) => ({ ...s, entryType: "schedule", action: s.dayType === "half" ? "Half-day schedule" : "Different schedule", validation: scheduleDiagnostics(s).length ? "Needs correction" : "Ready" })),
+          ...events.map((e) => ({ ...e, entryType: "event", action: e.kind === "holiday" ? "Full holiday" : e.kind === "half-day" ? "Half-day" : "Special working day", validation: e.kind === "half-day" ? "Review matching bell schedule" : "Ready" })),
+        ]} columns={[
+          { accessorKey: "name", header: "Rule name" },
+          { id: "target", header: "Who", accessorFn: (r) => targetName(r.target) },
+          { id: "when", header: "When", accessorFn: (r) => whenLabel(r.rule) },
+          { accessorKey: "action", header: "What happens" },
+          { accessorKey: "validation", header: "Status" },
+          { id: "edit", header: "Actions", cell: (c) => <div className="row-actions"><Button disabled={!editable} onClick={() => onEdit(c.row.original.entryType, c.row.original)}>Edit</Button><Button disabled={!editable} onClick={() => onDelete(c.row.original.entryType, c.row.original)}>Delete</Button></div> },
         ]} />
       </>}
       {view === "Calendar" && (
@@ -309,13 +308,7 @@ export function BellCalendar({
                 {dateLabel(year.startsAt)} – {dateLabel(year.endsAt)}
               </p>
             </div>
-            <Button
-              variant="dark"
-              disabled={!editable}
-              onClick={() => onEdit("event")}
-            >
-              <Plus size={15} /> Add event
-            </Button>
+            <div className="row-actions"><select aria-label="Calendar entry type" value={calendarAction} onChange={(e) => setCalendarAction(e.target.value)}><option value="holiday">Holiday</option><option value="half-day">Half-day</option><option value="working">Special working day</option></select><Button variant="dark" disabled={!editable} onClick={() => onEdit("event", { suggestedRule: "date", suggestedAction: calendarAction })}>Add calendar entry</Button></div>
           </div>
           <div className="calendar-options">
             <label>
@@ -484,7 +477,8 @@ export function BellCalendar({
         {summaryError && <div className="notice error" role="alert">{summaryError}</div>}
         {!summary && !summaryError && <p role="status">Calculating calendar totals…</p>}
         {summary && <>
-          <div className="calendar-summary">{[["Working days", summary.workingDays], ["Holidays / non-working", summary.holidays], ["Half-days", summary.halfDays], ["Working days per week", summary.workingDaysPerWeek], ["Working weeks", summary.workingWeeks]].map(([name, value]) => <div key={name}><small>{name}</small><strong>{value === null ? (summary.classrooms ? "Varies" : "—") : value}</strong></div>)}</div>
+          <div className="calendar-summary">{[["Working days", summary.workingDays], ["Full working days", summary.fullWorkingDays], ["Regular weekly working days", summary.regularWeeklyWorkingDays], ["Holidays / non-working", summary.holidays], ["Half-days", summary.halfDays], ["Working days per week", summary.workingDaysPerWeek], ["Working weeks", summary.workingWeeks]].map(([name, value]) => <div key={name}><small>{name}</small><strong>{value === null ? (summary.classrooms ? "Varies" : "—") : value}</strong></div>)}</div>
+          {summary.provisional && <div className="notice amber-notice">Some dates have missing or conflicting schedules. Review the unresolved days before relying on these totals.</div>}
           {summary.mixed && <div className="notice amber-notice">Classrooms follow different calendars. Totals vary by classroom; review the rows below.</div>}
           <DataTable data={summary.rows} columns={[
             { accessorKey: "board", header: "Board" }, { accessorKey: "classroom", header: "Classroom" },
@@ -546,8 +540,8 @@ export function BellCalendar({
                       <strong>{r.classroomName}</strong>
                       <Badge
                         value={
-                          r.status === "working"
-                            ? "ACTIVE"
+                          ["working", "half-day"].includes(r.status)
+                            ? r.schedule?.dayType === "half" ? "HALF_DAY" : "WORKING_DAY"
                             : r.status.toUpperCase()
                         }
                       />

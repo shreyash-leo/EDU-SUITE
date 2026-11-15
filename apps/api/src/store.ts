@@ -1,3 +1,4 @@
+import { ConflictException } from "@nestjs/common";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import type { Config } from "../../../packages/domain/src";
@@ -60,6 +61,8 @@ export async function readConfig(tx: Tx, revisionId: string): Promise<Config> {
   };
 }
 export async function writeConfig(tx: Tx, revisionId: string, c: Config) {
+  const revision = await tx.revision.findUniqueOrThrow({ where: { id: revisionId }, select: { status: true } });
+  if (revision.status !== "DRAFT") throw new ConflictException("Published configurations are read-only. Create a working draft first.");
   await tx.revisionBoard.deleteMany({ where: { revisionId } });
   for (const b of c.boards) {
     const boardId = randomUUID();

@@ -93,3 +93,27 @@ Node 24.11.1 passes the new runtime check; the installed Node 22.23.2 is rejecte
 ## 15 November 2026 refinement verification
 
 See `IMPLEMENTATION_2026-11-15.md` for the complete change/acceptance matrix. Prisma generation and schema validation passed. Application/test-source type checks passed. The final unit suite reports 109 passed and three PostgreSQL integration cases explicitly skipped. API compilation and Next.js production build passed. Five Playwright scenarios were discovered; their source was updated for dedicated page regions, route restoration, calendar totals and the six client sections. Real HTTP/browser execution is not claimed. The additive migration attempt failed P1001 because this execution session could not reach localhost:55432. Apply the pending migration from the user's local Terminal before running the updated application. Existing data and credentials were not reset.
+
+
+## Complete UI/UX workflow update
+
+`UI_WORKFLOWS_2026-11-15.md` records the implementation and limits. Final checks: 126 unit/domain/security tests passed; three PostgreSQL integration cases explicitly skipped; application and test-source type checks passed; API/Next.js production builds passed. Six browser scenarios discovered, with source extended for board chips, bulk grades, section assignment, classroom previews, guided bell generation and anchored routine confirmation. Live authenticated browser execution was blocked by unavailable computer permissions and is not claimed. No data reset or credential change was performed.
+
+## Academic structure enhancements — 15 November 2026
+
+See `STRUCTURE_ENHANCEMENTS_2026-11-15.md`. 155 unit/domain/security tests pass (29 new); four PostgreSQL integration cases are skipped by default. Application and test-source TypeScript checks pass. API and Next.js optimized production builds pass. Six Playwright scenarios are discovered, with assignment impact confirmation included. PostgreSQL integration and authenticated browser execution remain unrun: Docker socket access is denied and native computer-use permission is unavailable. No reset, reseed or credential change was made. This enhancement uses existing JSON columns and requires no additional migration.
+
+
+## Follow-up six-feature specification audit
+
+156 tests pass after correcting classroom-deletion dependency previews. The new regression verifies parent grade/section rules are listed while sibling classrooms are excluded. Four PostgreSQL integration cases remain explicitly skipped; live database/browser acceptance limitations are unchanged. No migration, reset or credential changes.
+
+## Organization client portal refinement
+
+174 unit/domain/security tests pass; application and test-source TypeScript checks pass; optimized API/Next.js builds pass. All five PostgreSQL integration cases pass in an isolated temporary schema. The authenticated HTTP onboarding, password replacement, paginated school directory/details, publication/history and deletion/recovery journey also passes in its own schema. Both test schemas and servers were removed afterward. Migration `202611150002_revision_updated_at` was successfully applied to the configured database; Prisma Client generation succeeded. No user records or credentials were reset.
+
+The isolated production web/API test app built and started. Six Playwright scenarios were attempted but all failed before opening a page: macOS sandbox denied Chromium's MachPortRendezvousServer bootstrap permission. Browser interactions and desktop/mobile visual layout remain unverified. See `CLIENT_PORTAL_2026-11-15.md` for implementation, commands and remaining acceptance work. The prior environment limits are superseded for database/HTTP checks only.
+
+## Explicit school inspection/configuration routing
+
+181 unit/domain/security tests pass, including seven entry-point regression cases. School rows/cards support keyboard activation, school-account filtering is server-side, and details actions now target Structure, Bell Time, Calendar and published History explicitly. No new migration for this follow-up. Seven browser scenarios are source-defined; actual browser execution remains blocked by macOS sandbox launch permissions. See the follow-up routing matrix in `CLIENT_PORTAL_2026-11-15.md`.

@@ -52,7 +52,7 @@ integration("PostgreSQL service integration", () => {
   it("persists shared calendars, explicit reopening, scoped summaries and tenant profile", async () => {
     const suffix = randomUUID().slice(0, 8);
     const org = await s.saveOrg(admin, { name: "Calendar Scope " + suffix, email: `${suffix}-calendar@example.com` }); created.push(org.id);
-    const school = await s.saveInstitution(admin, { organizationId: org.id, name: "Calendar School " + suffix, registration: suffix, boards: ["CBSE", "ICSE"] });
+    const school = await s.saveInstitution(admin, { organizationId: org.id, name: "Calendar School " + suffix, registration: suffix, boards: ["CBSE", "ICSE"], logo: "https://example.com/test.png" });
     await s.saveSubscription(admin, { organizationId: org.id, reference: "CAL-" + suffix, amount: 1000, startsAt: "2026-01-01T00:00:00Z", endsAt: "2099-12-31T23:59:59Z", status: "ACTIVE", agreementStatus: "SIGNED", paymentStatus: "PAID", classroomLimit: 2, userLimit: 1 });
     const year = await s.createYear(admin, school.id, { label: "2026–27", start: "2026-11-01", end: "2027-03-31" });
     const draft = await s.config(admin, year.id);
@@ -68,9 +68,83 @@ integration("PostgreSQL service integration", () => {
     expect(preview[0].status).toBe("working"); expect(preview[0].results[0].schedule?.name).toBe("Common school day");
     const summary = await s.calendarSummary(admin, year.id, {});
     expect(summary.classrooms).toBe(2); expect(summary.mixed).toBe(true);
+    // One config write persists the complete accepted bulk-grade set atomically.
+    const bulk = await s.config(admin, year.id);
+    bulk.config.boards[0].grades.push(...Array.from({ length: 11 }, (_, n) => ({ id: randomUUID(), name: `Grade ${n + 2}`, active: true, sectionId: null, classrooms: [] })));
+    await s.saveConfig(admin, year.id, { config: bulk.config, lock: bulk.revision.lock });
+    expect((await s.config(admin, year.id)).config.boards[0].grades).toHaveLength(12);
+    const duplicate = await s.config(admin, year.id);
+    duplicate.config.boards[0].grades.push({ ...duplicate.config.boards[0].grades[0], id: randomUUID(), classrooms: [] });
+    await expect(s.saveConfig(admin, year.id, { config: duplicate.config, lock: duplicate.revision.lock })).rejects.toThrow(/duplicate/);
+    expect((await s.config(admin, year.id)).config.boards[0].grades).toHaveLength(12);
+    const beforePublication = await s.config(admin, year.id);
+    await s.publish(admin, year.id, { lock: beforePublication.revision.lock, summary: "Before registering another board" });
+    await s.draft(admin, year.id, {});
+    const beforeSync = await s.config(admin, year.id);
+    await s.saveInstitution(admin, { ...school, organizationId: org.id, boards: ["CBSE", "ICSE", "IB"] }, school.id);
+    const afterSync = await s.config(admin, year.id);
+    expect(afterSync.config.boards.map((b) => b.name)).toContain("IB");
+    expect(afterSync.revision.lock).toBe(beforeSync.revision.lock + 1);
+    expect(afterSync.published?.boards.map((b) => b.name)).not.toContain("IB");
+    await expect(s.saveInstitution(admin, { ...school, organizationId: org.id, boards: ["CBSE"] }, school.id)).rejects.toThrow(/cannot be removed/);
     const tenant: Actor = { ...admin, role: "ORG_ADMIN", organizationId: org.id };
     expect((await s.organizationProfile(tenant)).id).toBe(org.id);
     await expect(s.calendarSummary({ ...tenant, organizationId: randomUUID() }, year.id, {})).rejects.toThrow();
+  });
+  it("scopes paginated client directories, selected years and school details to the organization", async () => {
+    const suffix=randomUUID().slice(0,8), org=await s.saveOrg(admin,{name:"Portal "+suffix,email:`portal-${suffix}@example.com`}); created.push(org.id);
+    await db.organization.update({where:{id:org.id},data:{status:"ACTIVE"}});
+    const school=await s.saveInstitution(admin,{organizationId:org.id,name:"Alpha "+suffix,registration:"A"+suffix,boards:["CBSE","ICSE"]});
+    await s.saveInstitution(admin,{organizationId:org.id,name:"Beta "+suffix,registration:"B"+suffix,boards:["IB"]});
+    const currentYear=new Date().getUTCFullYear(), current=await s.createYear(admin,school.id,{label:"Current",start:`${currentYear}-01-01`,end:`${currentYear}-12-31`});
+    const future=await s.createYear(admin,school.id,{label:"Future",start:`${currentYear+1}-01-01`,end:`${currentYear+1}-12-31`});
+    const tenant:Actor={...admin,role:"ORG_ADMIN",organizationId:org.id};
+    const page=await s.clientPortal(tenant,{page:1,pageSize:1});
+    expect(page.total).toBe(2);expect(page.rows).toHaveLength(1);expect(page.metrics.total).toBe(2);
+    expect(page.rows[0].yearId).toBe(current.id);expect(page.rows[0].structureStatus).toBe("DRAFT");
+    expect((await s.clientPortal(tenant,{page:2,pageSize:1})).rows[0].name).toBe("Beta "+suffix);
+    const selected=await s.clientPortal(tenant,{schoolId:school.id,yearId:future.id,board:"CBSE",status:"DRAFT"});
+    expect(selected.total).toBe(1);expect(selected.rows[0].yearId).toBe(future.id);
+    expect((await s.clientPortal(tenant,{search:"unmatched"})).total).toBe(0);
+    const details=await s.clientSchool(tenant,school.id,current.id);expect(details.year?.id).toBe(current.id);expect(details.school.boards).toEqual(["CBSE","ICSE"]);
+    const other:Actor={...tenant,organizationId:randomUUID()};
+    expect((await s.clientPortal(other,{})).rows).toEqual([]);
+    await expect(s.clientSchool(other,school.id,current.id)).rejects.toThrow(/unavailable/);
+    await expect(s.clientPortal(admin,{})).rejects.toThrow(/Organization account/);
+    await db.institution.update({where:{id:school.id},data:{status:"INACTIVE"}});
+    expect((await s.clientSchool(tenant,school.id)).school.status).toBe("INACTIVE");
+    const inactive=await s.clientPortal(tenant,{schoolStatus:"INACTIVE",board:"CBSE"});
+    expect(inactive.total).toBe(1);expect(inactive.rows[0].id).toBe(school.id);
+    expect((await s.clientPortal(tenant,{schoolStatus:"ACTIVE"})).total).toBe(1);
+    await expect(s.config(tenant,current.id)).rejects.toThrow(/unavailable/);
+    await db.institution.update({where:{id:school.id},data:{status:"DELETION_PENDING"}});
+    expect((await s.clientPortal(tenant,{})).total).toBe(1);
+    await expect(s.clientSchool(tenant,school.id)).rejects.toThrow(/unavailable/);
+  });
+  it("persists presets atomically and rejects stale or foreign draft edits", async () => {
+    const suffix = randomUUID().slice(0, 8);
+    const org = await s.saveOrg(admin, { name: "Preset test " + suffix, email: `${suffix}-preset@example.com` }); created.push(org.id);
+    const school = await s.saveInstitution(admin, { organizationId: org.id, name: "Preset school " + suffix, registration: suffix, boards: ["CBSE", "ICSE"] });
+    const year = await s.createYear(admin, school.id, { label: "2026–27", start: "2026-11-01", end: "2027-03-31" });
+    const initial = await s.config(admin, year.id);
+    const body = { boardId: initial.config.boards[0].id, lock: initial.revision.lock, revisionId: initial.revision.id, selection: { sections: ["Primary"], grades: [{ name: "Grade 1", section: "Primary" }] } };
+    const preview = await s.presetPreview(admin, year.id, body);
+    expect(preview.createdGrades).toBe(1);
+    expect((await s.config(admin, year.id)).revision.lock).toBe(initial.revision.lock);
+    await s.presetPreview(admin, year.id, body, true);
+    const saved = await s.config(admin, year.id);
+    expect(saved.config.boards[0].grades).toHaveLength(1);
+    expect(saved.config.boards[1]).toEqual(initial.config.boards[1]);
+    await expect(s.presetPreview(admin, year.id, body, true)).rejects.toThrow(/changed/);
+    await expect(s.saveConfig(admin, year.id, { config: saved.config, lock: saved.revision.lock, revisionId: randomUUID() })).rejects.toThrow(/replaced/);
+    const foreign = structuredClone(saved.config); foreign.boards[1].grades.push(foreign.boards[0].grades.pop()!);
+    await expect(s.saveConfig(admin, year.id, { config: foreign, lock: saved.revision.lock, revisionId: saved.revision.id })).rejects.toThrow(/original board/);
+    const next = structuredClone(saved.config); next.boards[0].grades[0].sectionId = null;
+    const impact = await s.impactPreview(admin, year.id, { config: next, lock: saved.revision.lock, revisionId: saved.revision.id });
+    expect(impact.updated).toBe(1);
+    const dates = await s.rulePreview(admin, year.id, { rule: { type: "recurring", weekdays: [6], nth: 5, startsOn: "2027-01-01", endsOn: "2027-02-28" } });
+    expect(dates.dates).toEqual(["2027-01-30"]);
+    expect((await s.config(admin, year.id)).config).toEqual(saved.config);
   });
   it("serializes classroom creation across institutions and preserves over-limit records", async () => {
     const suffix = randomUUID().slice(0, 8);
@@ -302,6 +376,9 @@ integration("PostgreSQL service integration", () => {
     const firstId = r.revision.id;
     await s.draft(client, y.id, {});
     const d = await s.config(client, y.id);
+    await expect(s.discard(client, y.id, { lock: d.revision.lock, revisionId: randomUUID() })).rejects.toThrow(/replaced/);
+    const { writeConfig } = await import("../apps/api/src/store");
+    await expect(db.$transaction((tx) => writeConfig(tx, firstId, d.config))).rejects.toThrow(/published|Published|working draft/);
     const changed = structuredClone(d.config);
     changed.boards[0].grades[0].name = "Renamed grade";
     await s.saveConfig(client, y.id, { config: changed, lock: 0 });
@@ -313,6 +390,14 @@ integration("PostgreSQL service integration", () => {
     ).rejects.toThrow(/changed elsewhere/);
     await s.publish(client, y.id, { lock: 1, summary: "Rename" });
     expect((await s.history(client, y.id)).length).toBe(2);
+    await s.draft(client, y.id, { restoreRevisionId: firstId });
+    const restored = await s.config(client, y.id);
+    expect(restored.revision.id).not.toBe(firstId);
+    expect(restored.config.boards[0].grades[0].name).toBe("Grade 1");
+    expect(restored.published?.boards[0].grades[0].name).toBe("Renamed grade");
+    await expect(s.discard(client, y.id, { lock: restored.revision.lock + 1, revisionId: restored.revision.id })).rejects.toThrow(/newer changes/);
+    await s.discard(client, y.id, { lock: restored.revision.lock, revisionId: restored.revision.id });
+    expect((await s.config(client, y.id)).config.boards[0].grades[0].name).toBe("Renamed grade");
     const copied = await s.createYear(client, i.id, {
       label: "2027–28",
       start: "2027-04-01",

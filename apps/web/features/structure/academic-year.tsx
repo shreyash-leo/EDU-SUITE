@@ -27,7 +27,7 @@ export function AcademicYearForm({ years, onSubmit }: { years: RecordData[]; onS
           classrooms: countClassrooms(copied),
           schedules: copied.boards.reduce((n, b) => n + b.schedules.length, 0),
           calendarRules: copied.boards.reduce((n, b) => n + b.events.length, 0),
-          excluded: original.boards.reduce((n, b) => n + b.events.filter((e) => e.rule.type === "date").length + b.schedules.filter((s) => s.rule.type === "date").length, 0),
+          excluded: original.boards.reduce((n, b) => n + b.events.filter((e) => e.rule.type === "date" || !!e.rule.startsOn || !!e.rule.endsOn).length + b.schedules.filter((s) => s.rule.type === "date" || !!s.rule.startsOn || !!s.rule.endsOn).length, 0),
         });
       })
       .catch((e) => { if (current) setError(e.message); })
@@ -47,7 +47,7 @@ export function AcademicYearForm({ years, onSubmit }: { years: RecordData[]; onS
       <strong>Copy preview</strong>
       <span>{preview.boards} boards · {preview.sections} sections · {preview.grades} grades · {preview.classrooms} classrooms</span>
       <span>{preview.schedules} reusable bell schedules · {preview.calendarRules} calendar rules</span>
-      <span>Excluded: {preview.excluded} fixed-date holidays and bell exceptions.</span>
+      <span>Excluded: {preview.excluded} fixed-date holidays, bell exceptions and date-limited recurrences.</span>
       <span>Review the new dates and recurrence anchors before publication. Copies remain independent.</span>
     </div> : !source && <div className="notice">Start a blank draft using this school’s registered boards.</div>}
     <Form
