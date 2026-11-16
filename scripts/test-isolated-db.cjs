@@ -42,7 +42,7 @@ async function ready(address) {
         processes.push(child);
       }
       await ready("http://localhost:4401/api/health");
-      if (browser) { await ready("http://localhost:3301"); run(["node_modules/@playwright/test/cli.js", "test"], extra); }
+      if (browser) { await ready("http://localhost:3301"); run(["node_modules/@playwright/test/cli.js", "test", "--max-failures=1"], extra); }
       else run(["--test", "tests/http.e2e.mjs"], extra);
     }
   } catch (error) { console.error(error.message); process.exitCode = 1; }
@@ -53,6 +53,7 @@ async function ready(address) {
       const timeout = setTimeout(() => child.kill("SIGKILL"), 5000); timeout.unref();
     })));
     try { await db.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); console.log("Removed disposable test schema."); }
+    catch (error) { console.error("Disposable schema cleanup unavailable: " + (error.code || "database unreachable") + ". No application schema was targeted."); process.exitCode=1; }
     finally {
       await db.$disconnect();
       if (browser) {

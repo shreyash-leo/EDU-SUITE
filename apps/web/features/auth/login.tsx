@@ -106,9 +106,9 @@ export function Login({
             BUILT FOR EDUCATION. DESIGNED FOR CLARITY.
           </span>
           <h1>
-            A thoughtful start
+            One workspace for
             <br />
-            to every academic year<span>.</span>
+            your academic foundation<span>.</span>
           </h1>
           <p>
             Your schools, academic structure and school days.
@@ -139,32 +139,37 @@ export function Login({
         <p className="eyebrow">WELCOME TO YOUR WORKSPACE</p>
         <h1>Sign in to PLAN.</h1>
         <p>Everything you need to set the year in motion.</p>
-        <div className="tabs">
+        <div className="tabs" role="group" aria-label="Sign-in workspace">
           <button
+            aria-pressed={portal === "platform"}
             className={portal === "platform" ? "active" : ""}
             onClick={() => setPortal("platform")}
           >
             Super Admin
           </button>
           <button
+            aria-pressed={portal === "organization"}
             className={portal === "organization" ? "active" : ""}
             onClick={() => setPortal("organization")}
           >
             Organization
           </button>
         </div>
+        <p className="portal-hint">{portal === "platform" ? "Super Admin access for client registration, onboarding and agreements." : "Organization administrator access for your schools and academic setup."}</p>
         <Form
           fields={[
             {
               key: "email",
               label: "Email address",
               type: "email",
+              autoComplete: "username",
               required: true,
             },
             {
               key: "password",
               label: "Password",
               type: "password",
+              autoComplete: "current-password",
               required: true,
             },
           ]}

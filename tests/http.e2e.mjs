@@ -11,7 +11,7 @@ test(
       let cookie = "",
         csrf = "";
       return {
-        async request(path, method = "GET", body) {
+        async request(path, method = "GET", body, extraHeaders = {}) {
           const r = await fetch(base + path, {
             method,
             headers: {
@@ -19,6 +19,7 @@ test(
               Origin: origin,
               ...(cookie ? { Cookie: cookie } : {}),
               ...(csrf ? { "x-csrf-token": csrf } : {}),
+              ...extraHeaders,
             },
             ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           });
@@ -161,6 +162,11 @@ test(
       lock: saved.lock,
       summary: "HTTP end-to-end initial activation",
     });
+    await assert.rejects(()=>clientPortal.request(`/years/${year.id}/draft`,"POST",{},{"x-csrf-token":""}), e=>e.status===403);
+    await assert.rejects(()=>clientPortal.request(`/years/${year.id}/draft`,"POST",{},{Origin:"https://untrusted.example"}), e=>e.status===403);
+    const output = await clientPortal.request(`/years/${year.id}/published-output?start=2026-11-02&end=2026-11-02`);
+    assert.equal(output.contractVersion,1); assert.equal(output.summary.validatedWorkingDays,0); assert.equal(output.summary.provisionalWorkingDays,1);
+    await assert.rejects(()=>clientPortal.request(`/years/${randomUUID()}/published-output`),e=>e.status===404);
     const published = await clientPortal.request(`/years/${year.id}/config`);
     assert.equal(published.config.boards[0].grades[0].classrooms.length, 1);
     assert.equal(published.revision.status, "INCOMPLETE_ACTIVE");

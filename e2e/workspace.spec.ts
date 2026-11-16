@@ -83,7 +83,7 @@ test("platform settings require an explicit discard or a successful save", async
   await section(page, "Organizations");
   const guard = page.getByRole("dialog", { name: "Unsaved changes" });
   await expect(guard).toBeVisible();
-  await guard.getByRole("button", { name: "Discard & continue" }).click();
+  await guard.getByRole("button", { name: "Discard Unsaved Changes" }).click();
   await section(page, "Requests & Settings");
   await expect(page.getByLabel("Support information")).toHaveValue(
     before.values.supportNotes,
@@ -157,9 +157,9 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
     page.getByRole("heading", { name: "Make this account yours." }),
   ).toBeVisible();
   await page
-    .getByLabel("Temporary / current password")
+    .getByLabel("Temporary / current password", { exact: true })
     .fill(credentials.temporaryPassword);
-  await page.getByLabel("New password").fill("BrowserClientPassword!2026");
+  await page.getByLabel("New password", { exact: true }).fill("BrowserClientPassword!2026");
   await page.getByRole("button", { name: "Set password & continue" }).click();
   await expect(
     page.getByRole("heading", { name: org.name, exact: true }),
@@ -241,6 +241,26 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await rooms.getByRole("button", { name: "Create 1 classroom", exact: true }).click();
   await expect(rooms).not.toBeVisible();
   expect((await call(page, `/years/${year.id}/config`)).config.boards[0].grades[0].classrooms.map((c: {name: string}) => c.name)).toContain("1C");
+  const beforeBulkDelete = await call(page, `/years/${year.id}/config`);
+  await page.getByRole("checkbox", { name: "Select 1B", exact: true }).check();
+  await page.getByRole("checkbox", { name: "Select 1C", exact: true }).check();
+  await page.getByLabel("Bulk action", { exact: true }).selectOption({ label: "Delete classrooms" });
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  let deleteReview = page.getByRole("dialog", { name: "Delete classrooms", exact: true });
+  await expect(deleteReview.getByText("1B · Grade 1")).toBeVisible();
+  await expect(deleteReview.getByText("1C · Grade 1")).toBeVisible();
+  await deleteReview.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect((await call(page, `/years/${year.id}/config`)).config.boards[0].grades[0].classrooms).toHaveLength(3);
+  await page.getByRole("checkbox", { name: "Select 1B", exact: true }).check();
+  await page.getByRole("checkbox", { name: "Select 1C", exact: true }).check();
+  await page.getByLabel("Bulk action", { exact: true }).selectOption({ label: "Delete classrooms" });
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  deleteReview = page.getByRole("dialog", { name: "Delete classrooms", exact: true });
+  await deleteReview.getByRole("button", { name: "Delete 2 classrooms", exact: true }).click();
+  await expect.poll(async () => (await call(page, `/years/${year.id}/config`)).config.boards[0].grades[0].classrooms.map((c: {name: string}) => c.name)).toEqual(["1A"]);
+  const afterBulkDelete = await call(page, `/years/${year.id}/config`);
+  await call(page, `/years/${year.id}/config`, "PUT", { config: beforeBulkDelete.config, lock: afterBulkDelete.revision.lock, revisionId: afterBulkDelete.revision.id });
+  await page.reload();
   await page.getByRole("button", { name: /Bell Time & Calendar/ }).click();
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   let modal = page.getByRole("region", { name: "Bell schedule" });
@@ -250,12 +270,13 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await modal.getByRole("button", { name: "Back to workspace" }).click();
   const guard = page.getByRole("dialog", { name: "Unsaved changes" });
   await guard.getByRole("button", { name: "Save & continue" }).click();
+  await expect(guard).not.toBeVisible();
   await expect(modal).not.toBeVisible();
   const stored = await call(page, `/years/${year.id}/config`);
   expect(stored.config.boards[0].schedules[0].slots[1].start).toBe(510);
   await page.getByRole("button", { name: /Review & activate/ }).click();
   let review = page.getByRole("region", { name: "Review your configuration" });
-  await expect(review.getByText(/overlap with preceding slot/)).toBeVisible();
+  await expect(review.getByText(/overlap with preceding slot/).first()).toBeVisible();
   await review.getByRole("button", { name: "Publish configuration" }).click();
   await expect(review.getByText("Resolve blocking errors first")).toBeVisible();
   expect(
@@ -274,7 +295,7 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   expect((await call(page, `/years/${year.id}/config`)).revision.status).toBe(
     "ACTIVE",
   );
-  await page.getByRole("button", { name: "Academic Calendar", exact: true }).click();
+  await page.getByRole("button", { name: "Calendar & preview", exact: true }).click();
   await page.getByRole("button", { name: "Year summary", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Academic year totals", exact: true })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "Working days", exact: true })).toBeVisible();
@@ -284,9 +305,21 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await section(page, "Review & History");
   await page.getByLabel("Search schools", { exact: true }).fill(name);
   await page.getByRole("row").filter({ hasText: name }).getByRole("button", { name: "Review & History", exact: true }).click();
+  const historicalSnapshot = await call(page, `/years/${year.id}/config`);
+  await call(page, `/years/${year.id}/draft`, "POST", {});
+  const laterDraft = await call(page, `/years/${year.id}/config`);
+  laterDraft.config.boards[0].grades[0].name = "Later published grade";
+  const laterSaved = await call(page, `/years/${year.id}/config`, "PUT", { config: laterDraft.config, lock: laterDraft.revision.lock, revisionId: laterDraft.revision.id });
+  await call(page, `/years/${year.id}/publish`, "POST", { lock: laterSaved.lock, revisionId: laterDraft.revision.id, summary: "Later publication for history refresh verification" });
   await page.getByRole("button", { name: "View published versions", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Published version history", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
+  const historicalPanel = page.getByRole("region", { name: "Published version history", exact: true });
+  await expect(historicalPanel).toBeVisible();
+  await historicalPanel.getByRole("button", { name: "View", exact: true }).last().click();
+  await expect(page).toHaveURL(new RegExp(`revision=${historicalSnapshot.revision.id}`));
+  await page.reload();
+  await expect(page).toHaveURL(new RegExp(`revision=${historicalSnapshot.revision.id}`));
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save draft", exact: true })).toHaveCount(0);
   await section(page, "Account & Subscription");
   await expect(page.getByRole("heading", { name: "Account & subscription", exact: true })).toBeVisible();
   await expect(page.getByText("BROWSER-" + suffix, { exact: true })).toBeVisible();
@@ -319,7 +352,7 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   const newDraft = await call(page, `/years/${year.id}/config`);
   expect(newDraft.config.boards[0].schedules).toHaveLength(2);
   expect(newDraft.published.boards[0].schedules).toHaveLength(1);
-  await page.getByRole("button", { name: "Advanced Scheduling", exact: true }).click();
+  await page.getByRole("button", { name: "3 · Advanced Scheduling", exact: true }).click();
   await page.getByRole("combobox", { name: "New rule action", exact: true }).selectOption("holiday");
   await page.getByRole("button", { name: "Add rule", exact: true }).click();
   const event = page.getByRole("region", { name: "Calendar event", exact: true });
@@ -328,6 +361,47 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await event.getByRole("button", { name: "Save event to draft", exact: true }).click();
   await expect(event).not.toBeVisible();
   expect((await call(page, `/years/${year.id}/config`)).config.boards[0].events[0].rule.nth).toBe(4);
+  await page.getByRole("button", {name:"Use three-part scheduling in draft",exact:true}).click();
+  await expect(page.getByRole("button", {name:"Use three-part scheduling in draft",exact:true})).toHaveCount(0);
+  await page.getByRole("button", {name:"2 · Default Holidays",exact:true}).click();
+  await page.getByRole("button", {name:"Add holiday",exact:true}).click();
+  const holiday = page.getByRole("region", {name:"Calendar event",exact:true});
+  await holiday.getByLabel("Event name",{exact:true}).fill("Diwali vacation");
+  await holiday.getByRole("button", {name:"Use inclusive holiday date range",exact:true}).click();
+  await holiday.getByRole("button", {name:"Save event to draft",exact:true}).click();
+  await expect(holiday).not.toBeVisible();
+  const afterHoliday = await call(page, `/years/${year.id}/config`);
+  const parent = afterHoliday.config.boards[0].events.find((e:any)=>e.name==="Diwali vacation");
+  expect(parent.configurationPart).toBe("default-holidays");
+  await page.getByRole("row").filter({hasText:"Diwali vacation"}).getByRole("button",{name:"Add targeted override",exact:true}).click();
+  await expect(holiday.getByLabel("Parent holiday / vacation",{exact:true})).toHaveValue(parent.id);
+  await holiday.getByLabel("Event name",{exact:true}).fill("Classroom vacation");
+  await holiday.getByRole("checkbox",{name:/1A/}).check();
+  await holiday.getByRole("button", {name:"Save event to draft",exact:true}).click();
+  await expect(holiday).not.toBeVisible();
+  const afterOverride=await call(page, `/years/${year.id}/config`);
+  expect(afterOverride.config.resolverVersion).toBe(2);
+  expect(afterOverride.config.boards[0].events.find((e:any)=>e.name==="Classroom vacation").parentId).toBe(parent.id);
+  expect(afterOverride.published.resolverVersion).toBe(1);
+  await page.getByRole("button", {name:"3 · Advanced Scheduling",exact:true}).click();
+  await page.getByRole("combobox", {name:"New rule action",exact:true}).selectOption("schedule");
+  await page.getByRole("button", {name:"Add rule",exact:true}).click();
+  const timingRule=page.getByRole("region",{name:"Calendar event",exact:true});
+  await timingRule.getByLabel("Event name",{exact:true}).fill("Targeted recurring timing");
+  await expect(timingRule.getByLabel("What happens?",{exact:true})).toHaveValue("timing");
+  await timingRule.getByLabel("Bell schedule",{exact:true}).selectOption(afterOverride.config.boards[0].schedules[0].id);
+  await timingRule.getByRole("button",{name:"Save event to draft",exact:true}).click();
+  await expect(timingRule).not.toBeVisible();
+  const afterTiming=await call(page, `/years/${year.id}/config`);
+  expect(afterTiming.config.boards[0].events.find((e:any)=>e.name==="Targeted recurring timing").operation).toBe("timing");
+
+  await page.setViewportSize({width:1280,height:720});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+  await page.setViewportSize({width:768,height:1024});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+  await page.reload();
+  await expect(page.getByRole("button",{name:"Use three-part scheduling in draft",exact:true})).toHaveCount(0);
+
 });
 
 test("workspace search opens sections by keyboard and preserves compact navigation", async ({ page }) => {
@@ -423,8 +497,8 @@ test("client school inspection and configuration remain separate entry points", 
   const credentials=await call(page,`/organizations/${org.id}/activate`,"POST",{});
   await call(page,"/auth/logout","POST",{});
   await login(page,credentials.email,credentials.temporaryPassword,"Organization");
-  await page.getByLabel("Temporary / current password").fill(credentials.temporaryPassword);
-  await page.getByLabel("New password").fill("PortalClientPassword!2026");
+  await page.getByLabel("Temporary / current password", { exact: true }).fill(credentials.temporaryPassword);
+  await page.getByLabel("New password", { exact: true }).fill("PortalClientPassword!2026");
   await page.getByRole("button",{name:"Set password & continue"}).click();
   await expect(page.locator(".portal-metrics")).toBeVisible();
   const directory=await call(page,"/client-portal");

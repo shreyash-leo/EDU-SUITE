@@ -103,6 +103,7 @@ export function RegistrationRequestForm({
         void save().catch((e) => setError(e.message));
       }}
     >
+      <div className="request-context" data-tone="warning"><p className="eyebrow">Registration change request</p><h2>{institution.name}</h2><p>Review the fields you want to change and include a reason for approval.</p></div>
       <p className="form-help">
         Changes require Super Admin approval. Registered boards with academic
         history cannot be removed.

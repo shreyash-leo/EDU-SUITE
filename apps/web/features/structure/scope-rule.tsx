@@ -48,14 +48,14 @@ export function ScopeRule({
         {showWhen && <label>
           When does it apply?
           <select
-            value={rule.type}
+            value={rule.type === "recurring" && rule.weekdays.length === 7 && !rule.nth && rule.startsOn && rule.endsOn ? "range" : rule.type}
             onChange={(e) =>
-              onRule({ ...rule, type: e.target.value as Rule["type"], nth: undefined, intervalWeeks: 1, anchorDate: undefined })
+              onRule(e.target.value === "range" ? {...defaultRule(),type:"recurring",weekdays:[0,1,2,3,4,5,6],startsOn:today(),endsOn:today()} : { ...rule, type: e.target.value as Rule["type"], nth: undefined, intervalWeeks: 1, anchorDate: undefined })
             }
           >
-            {["default", "weekly", "recurring", "date"].map((t) => (
+            {["default", "weekly", "recurring", "date", "range"].map((t) => (
               <option key={t} value={t}>
-                {t === "date" ? "Specific date" : label(t)}
+                {t === "date" ? "Specific date" : t === "range" ? "Inclusive date range" : label(t)}
               </option>
             ))}
           </select>
@@ -64,6 +64,7 @@ export function ScopeRule({
           <div className="span2 scope-targets"><label>Search targets<input value={query} placeholder="Search by board, grade or name…" onChange={(e) => setQuery(e.target.value)} /></label><p className="form-help">{target.ids.length} selected · Select one or multiple targets.</p><div className="target-checklist">{options.filter((o) => o.name.toLowerCase().includes(query.toLowerCase())).map((o) => <label className="check-option" key={o.id}><input type="checkbox" checked={target.ids.includes(o.id)} onChange={(e) => onTarget({ ...target, ids: e.target.checked ? [...target.ids, o.id] : target.ids.filter((id) => id !== o.id) })} />{o.name}</label>)}</div></div>
         )}
         {showWhen && <div className="span2 recurrence-presets"><span>Quick setup</span><button type="button" onClick={() => onRule({ ...defaultRule(), type: "recurring", weekdays: [6], nth: 2 })}>Second Saturday</button><button type="button" onClick={() => onRule({ ...defaultRule(), type: "recurring", weekdays: [6], nth: 4 })}>Fourth Saturday</button><button type="button" onClick={() => onRule({ ...defaultRule(), type: "weekly", weekdays: [1, 2, 3, 4, 5] })}>Every weekday</button><button type="button" onClick={() => onRule({ ...defaultRule(), type: "date", date: today() })}>Specific date</button></div>}
+        {showWhen && rule.type === "recurring" && rule.weekdays.length === 7 && !rule.nth && <div className="form-grid span2"><label>Start date (inclusive)<input type="date" value={rule.startsOn || ""} onChange={e=>onRule({...rule,startsOn:e.target.value})} /></label><label>End date (inclusive)<input type="date" value={rule.endsOn || ""} onChange={e=>onRule({...rule,endsOn:e.target.value})} /></label></div>}
         {showWhen && rule.type === "date" && (
           <label>
             Specific date
@@ -84,6 +85,7 @@ export function ScopeRule({
                     <button
                       type="button"
                       key={d}
+                      aria-pressed={rule.weekdays.includes(n)}
                       className={rule.weekdays.includes(n) ? "selected" : ""}
                       onClick={() =>
                         onRule({

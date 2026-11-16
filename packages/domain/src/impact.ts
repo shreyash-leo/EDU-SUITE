@@ -1,4 +1,4 @@
-import type { Board, Config } from "./index";
+import { applicableRules, targetRank, type Board, type Config } from "./index";
 import { configurationChanges } from "./enhancements";
 type Item = { id: string; name: string; board: string };
 export function configurationImpact(before: Config | null, after: Config) {
@@ -8,6 +8,15 @@ export function configurationImpact(before: Config | null, after: Config) {
   const roomIds = new Set(changes.filter((c) => c.entity === "Classroom").map((c) => c.id));
   const allBoards = [...before?.boards || [], ...after.boards];
   for (const b of allBoards) for (const g of b.grades) if (gradeIds.has(g.id)) { if (g.sectionId) sectionIds.add(g.sectionId); g.classrooms.forEach((c) => roomIds.add(c.id)); }
+  // Rule edits affect their potential targets, including explicit shared scopes.
+  // Add rooms first; ancestors below must not expand a single-room rule to siblings.
+  const changedRules=new Set(changes.filter(c=>c.entity==="Bell schedule" || c.entity==="Calendar event").map(c=>c.id));
+  const changedBoards=new Set(changes.filter(c=>c.entity==="Board").map(c=>c.id));
+  for(const config of [before,after]) if(config) for(const b of config.boards) {
+    const rules=applicableRules(b,config);
+    const relevant=[...rules.schedules,...rules.events].filter(r=>changedRules.has(r.id));
+    for(const g of b.grades) for(const room of g.classrooms) if(changedBoards.has(b.id) || relevant.some(r=>targetRank(r.target,b,room.id)>0)) roomIds.add(room.id);
+  }
   // A classroom change also depends on its parent grade/section rules. Add the
   // ancestors after expanding directly changed grades so unaffected sibling
   // classrooms are not reported as changed by a single-classroom deletion.
@@ -35,7 +44,7 @@ export function configurationImpact(before: Config | null, after: Config) {
     return [...found.values()];
   };
   const byEntity = [...new Set(changes.map((c) => c.entity))].map((entity) => ({ entity, created: changes.filter((c) => c.entity === entity && c.kind === "added").length, updated: changes.filter((c) => c.entity === entity && c.kind === "updated").length, removed: changes.filter((c) => c.entity === entity && c.kind === "deleted").length }));
-  return { boards: [...new Set(changes.map((c) => c.board))], grades: collect("Grade", gradeIds), sections: collect("Section", sectionIds), classrooms: collect("Classroom", roomIds), schedules: rules("schedules"), calendarRules: rules("events"), byEntity, changes,
+  return { boardIds: [...new Set([...affectedBoardIds,...changedBoards])], boards: [...new Set([...changes.map((c) => c.board),...allBoards.filter(b=>affectedBoardIds.has(b.id)).map(b=>b.name)])], grades: collect("Grade", gradeIds), sections: collect("Section", sectionIds), classrooms: collect("Classroom", roomIds), schedules: rules("schedules"), calendarRules: rules("events"), byEntity, changes,
     created: changes.filter((c) => c.kind === "added").length, updated: changes.filter((c) => c.kind === "updated").length, removed: changes.filter((c) => c.kind === "deleted").length };
 }
 export type ConfigurationImpact = ReturnType<typeof configurationImpact>;

@@ -1,3 +1,4 @@
+import { resolveV2, schedulingIssues } from "./scheduling";
 import { z } from "zod";
 const id = z.string().uuid();
 export const targetSchema = z.object({
@@ -57,6 +58,7 @@ export const scheduleSchema = z.object({
   arrival: z.number().int().min(0).max(1439),
   dispersal: z.number().int().min(1).max(1440),
   dayType: z.enum(["full", "half"]).optional(),
+  templateOnly: z.boolean().optional(),
   target: targetSchema,
   rule: ruleSchema,
   slots: z.array(slotSchema).max(100),
@@ -68,6 +70,10 @@ export const eventSchema = z.object({
   target: targetSchema,
   rule: ruleSchema,
   overridesHoliday: z.boolean().optional(),
+  configurationPart: z.enum(["default-holidays", "advanced"]).optional(),
+  parentId: id.optional(),
+  scheduleId: id.optional(),
+  operation: z.literal("timing").optional(),
 }).superRefine((event, context) => {
   if (event.overridesHoliday && (event.kind !== "working" || event.rule.type !== "date"))
     context.addIssue({ code: "custom", message: "A holiday reopening requires a specific-date working-day exception" });
@@ -88,6 +94,7 @@ export const boardSchema = z.object({
           id,
           name: z.string().trim().min(1).max(100),
           active: z.boolean(),
+          capacity: z.number().int().positive().max(10000).nullable().optional(),
         }),
       ),
     }),
@@ -95,7 +102,7 @@ export const boardSchema = z.object({
   schedules: z.array(scheduleSchema),
   events: z.array(eventSchema),
 });
-export const configSchema = z.object({ boards: z.array(boardSchema).max(20) });
+export const configSchema = z.object({ resolverVersion: z.union([z.literal(1), z.literal(2)]).optional(), boards: z.array(boardSchema).max(20) });
 export type Config = z.infer<typeof configSchema>;
 export type Board = Config["boards"][number];
 export type Schedule = z.infer<typeof scheduleSchema>;
@@ -278,7 +285,7 @@ export function resolve(
   classroom: string,
   date: string,
   config?: Config,
-): { status: string; schedule?: Schedule; reason: string } {
+): { status: string; schedule?: Schedule; reason: string; calendarRuleId?: string; winningRule?: { id: string; ruleType: Rule["type"]; scope: Target["scope"]; priority: number }; warnings?: string[]; conflicts?: string[]; expectedDayType?: "full" | "half" } {
   if (!validDate(date)) throw Error("Invalid preview date");
   const grade = b.grades.find((g) =>
     g.classrooms.some((c) => c.id === classroom),
@@ -289,6 +296,7 @@ export function resolve(
     !grade.classrooms.find((c) => c.id === classroom)?.active
   )
     return { status: "inactive", reason: "Grade or classroom is inactive" };
+  if (config?.resolverVersion === 2) return resolveV2(b, classroom, date, config);
   const rules = applicableRules(b, config);
   const ev = ranked(rules.events, b, classroom, date);
   const holiday = ev.find((x) => x.item.kind === "holiday");
@@ -297,23 +305,25 @@ export function resolve(
   if (holiday && working && holiday.rank === working.rank)
     return {
       status: "conflict",
-      reason: "Conflicting holiday and working-day exceptions",
+      reason: "Conflicting holiday and working-day exceptions", conflicts: [holiday.item.id, working.item.id],
     };
   if (holiday && (!reopening || holiday.rank >= working.rank))
-    return { status: "holiday", reason: holiday.item.name };
+    return { status: "holiday", reason: holiday.item.name, calendarRuleId: holiday.item.id };
   const half = ev.find((x) => x.item.kind === "half-day");
   const schedules = ranked(rules.schedules, b, classroom, date);
-  const explicitHalfDay = schedules[0]?.item.dayType === "half" && schedules[0].item.rule.type !== "default";
+  if (half && working && half.rank === working.rank)
+    return { status: "conflict", reason: "Equal-priority full-day and half-day exceptions", conflicts: [half.item.id, working.item.id] };
   if (
     b.nonWorkingDays.includes(new Date(date + "T00:00:00Z").getUTCDay()) &&
-    !working && !half && !explicitHalfDay
+    !working && !half
   )
     return { status: "non-working", reason: "Weekly non-working day" };
+  const effectiveHalf = half && (!working || working.rank <= half.rank);
   if (!schedules.length)
-    return { status: "missing", reason: "No applicable bell schedule" };
+    return { status: "missing", reason: effectiveHalf ? "Unresolved half-day: no applicable half-day bell schedule" : "No applicable bell schedule", expectedDayType: effectiveHalf ? "half" : "full", warnings: [effectiveHalf ? "Half-day requires a matching bell schedule" : "No validated instructional schedule"] };
   if (schedules.length > 1 && schedules[0].rank === schedules[1].rank)
     return {
-      status: "conflict",
+      status: "conflict", conflicts: schedules.filter(s=>s.rank===schedules[0].rank).map(s=>s.item.id),
       reason: `Equal-priority schedules: ${schedules
         .filter((s) => s.rank === schedules[0].rank)
         .map((s) => s.item.name)
@@ -326,6 +336,8 @@ export function resolve(
     return { status: "invalid", schedule: selected.item, reason: "Half-day event requires a matching half-day bell schedule at the same or higher priority" };
   return {
     status: "working",
+    calendarRuleId: half && (!working || half.rank > working.rank) ? half.item.id : working?.item.id,
+    winningRule: { id: selected.item.id, ruleType: selected.item.rule.type, scope: selected.item.target.scope, priority: selected.rank },
     schedule: selected.item,
     reason: `${selected.item.name} · ${selected.item.dayType === "half" ? "Half-day" : "Working day"} · ${selected.item.rule.type} / ${selected.item.target.scope}${reopening && holiday ? " · explicit holiday reopening: " + working.item.name : ""}`,
   };
@@ -339,6 +351,7 @@ export function review(
   const out: Issue[] = [];
   const err = (message: string) => out.push({ severity: "error", message });
   const warn = (message: string) => out.push({ severity: "warning", message });
+  if (c.resolverVersion === 2) for (const message of schedulingIssues(c, start, end)) err(message);
   if (countClassrooms(c) > limit) err("Classroom entitlement exceeded");
   if (!c.boards.length) warn("No academic boards configured");
   if (new Set(c.boards.map((b) => b.name.toLowerCase())).size !== c.boards.length) err("Boards: duplicate names");
@@ -404,7 +417,10 @@ export function review(
         for (const r of g.classrooms) {
           const result = resolve(b, r.id, date, c);
           if (["conflict", "invalid"].includes(result.status)) conflicts.add(`${date} / ${r.name}: ${result.reason}`);
-          if (result.status === "missing") missing.add(r.name);
+          if (result.status === "missing") {
+            if (c.resolverVersion === 2) conflicts.add(`${date} / ${r.name}: ${result.reason}`);
+            else missing.add(r.name);
+          }
           const ev = ranked(
             applicableRules(b, c).events.filter((e) => e.kind !== "half-day"),
             b,
@@ -412,7 +428,7 @@ export function review(
             date,
           );
           if (
-            ev.length > 1 &&
+            c.resolverVersion !== 2 && ev.length > 1 &&
             ev[0].rank === ev[1].rank &&
             ev[0].item.kind !== ev[1].item.kind
           )
@@ -441,14 +457,30 @@ export function emptyConfig(boards: string[], makeId: () => string): Config {
     })),
   };
 }
-export function copyYear(c: Config): Config {
-  return {
+export function copyYear(c: Config, options?: { anchors: "keep" | "drop" | "rebase"; start: string }): Config {
+  const adjust = <T extends { rule: Rule }>(items: T[]) => items.filter(e => e.rule.type !== "date" && !e.rule.startsOn && !e.rule.endsOn && !(options?.anchors === "drop" && e.rule.intervalWeeks > 1)).map(e => options?.anchors === "rebase" && e.rule.intervalWeeks > 1 ? { ...e, rule: { ...e.rule, anchorDate: options.start } } : e);
+  const next: Config = {
+    ...structuredClone(c),
     boards: structuredClone(c).boards.map((b) => ({
       ...b,
-      events: b.events.filter((e) => e.rule.type !== "date" && !e.rule.startsOn && !e.rule.endsOn),
-      schedules: b.schedules.filter((s) => s.rule.type !== "date" && !s.rule.startsOn && !s.rule.endsOn),
+      events: adjust(b.events),
+      schedules: adjust(b.schedules),
     })),
   };
+  // Drop descendants of excluded date-bound parents, and linked events whose
+  // templates were excluded. Never leave broken family references in a new year.
+  let changed = true;
+  while (changed) {
+    const events = new Set(next.boards.flatMap(b=>b.events.map(e=>e.id)));
+    const schedules = new Set(next.boards.flatMap(b=>b.schedules.map(s=>s.id)));
+    changed = false;
+    for (const b of next.boards) b.events = b.events.filter(e=> {
+      const keep = (!e.parentId || events.has(e.parentId)) && (!e.scheduleId || schedules.has(e.scheduleId));
+      if (!keep) changed = true;
+      return keep;
+    });
+  }
+  return next;
 }
 export function deletionDue(now: Date) {
   return new Date(now.getTime() + 60 * 86400000);
@@ -509,6 +541,15 @@ export function removeFromConfig(config: Config, boardId: string, kind: string, 
     b.schedules = prune(b.schedules); b.events = prune(b.events);
   }
   return next;
+}
+
+export function removeClassroomsFromConfig(config: Config, boardId: string, classroomIds: string[]): Config {
+  const board = config.boards.find((item) => item.id === boardId);
+  if (!board) throw Error("Board does not belong to this school year");
+  const available = new Set(board.grades.flatMap((grade) => grade.classrooms.map((room) => room.id)));
+  const ids = [...new Set(classroomIds)];
+  if (ids.some((id) => !available.has(id))) throw Error("A selected classroom no longer belongs to this board");
+  return ids.reduce((next, id) => removeFromConfig(next, boardId, "classroom", id), config);
 }
 
 

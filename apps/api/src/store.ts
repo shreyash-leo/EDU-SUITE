@@ -21,6 +21,7 @@ export async function readConfig(tx: Tx, revisionId: string): Promise<Config> {
     include: revisionInclude,
   });
   return {
+    resolverVersion: r.resolverVersion === 2 ? 2 : 1,
     boards: r.boards.map((b) => ({
       id: b.boardKey,
       name: b.name,
@@ -37,6 +38,7 @@ export async function readConfig(tx: Tx, revisionId: string): Promise<Config> {
           id: c.entityKey,
           name: c.name,
           active: c.active,
+          capacity: c.capacity,
         })),
       })),
       schedules: b.schedules.map((s) => ({
@@ -45,6 +47,7 @@ export async function readConfig(tx: Tx, revisionId: string): Promise<Config> {
         arrival: s.arrival,
         dispersal: s.dispersal,
         dayType: s.dayType as "full" | "half",
+        templateOnly: s.templateOnly,
         target: s.target,
         rule: s.rule,
         slots: s.slots,
@@ -54,6 +57,7 @@ export async function readConfig(tx: Tx, revisionId: string): Promise<Config> {
         name: e.name,
         kind: e.kind,
         overridesHoliday: e.overridesHoliday,
+        ...(e.scheduling as object),
         target: e.target,
         rule: e.rule,
       })) as Config["boards"][number]["events"],
@@ -63,6 +67,7 @@ export async function readConfig(tx: Tx, revisionId: string): Promise<Config> {
 export async function writeConfig(tx: Tx, revisionId: string, c: Config) {
   const revision = await tx.revision.findUniqueOrThrow({ where: { id: revisionId }, select: { status: true } });
   if (revision.status !== "DRAFT") throw new ConflictException("Published configurations are read-only. Create a working draft first.");
+  await tx.revision.update({ where: { id: revisionId }, data: { resolverVersion: c.resolverVersion || 1 } });
   await tx.revisionBoard.deleteMany({ where: { revisionId } });
   for (const b of c.boards) {
     const boardId = randomUUID();
@@ -104,6 +109,7 @@ export async function writeConfig(tx: Tx, revisionId: string, c: Config) {
             entityKey: c.id,
             name: c.name,
             active: c.active,
+            capacity: c.capacity,
           })),
         });
     }
@@ -117,6 +123,7 @@ export async function writeConfig(tx: Tx, revisionId: string, c: Config) {
           arrival: s.arrival,
           dispersal: s.dispersal,
           dayType: s.dayType || "full",
+          templateOnly: s.templateOnly || false,
           target: json(s.target),
           rule: json(s.rule),
           slots: json(s.slots),
@@ -131,6 +138,7 @@ export async function writeConfig(tx: Tx, revisionId: string, c: Config) {
           name: e.name,
           kind: e.kind,
           overridesHoliday: e.overridesHoliday || false,
+          scheduling: json({ ...(e.operation ? { operation: e.operation } : {}), ...(e.configurationPart ? { configurationPart: e.configurationPart } : {}), ...(e.parentId ? { parentId: e.parentId } : {}), ...(e.scheduleId ? { scheduleId: e.scheduleId } : {}) }),
           target: json(e.target),
           rule: json(e.rule),
         })),

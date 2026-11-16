@@ -1,3 +1,4 @@
+import { regularWorkingDays } from "./scheduling";
 import { academicPresetSchema, defaultAcademicPresets } from "./presets";
 import { z } from "zod";
 import {
@@ -171,7 +172,7 @@ function flatten(c: Config | null) {
         board: b.name,
         value,
       });
-    put("Board", b, { name: b.name, nonWorkingDays: b.nonWorkingDays });
+    put("Board", b, { name: b.name, nonWorkingDays: b.nonWorkingDays, resolverVersion: c?.resolverVersion || 1 });
     for (const x of b.sections)
       put("Section", x, { name: x.name, boardId: b.id });
     for (const g of b.grades) {
@@ -187,6 +188,7 @@ function flatten(c: Config | null) {
         put("Classroom", r, {
           name: r.name,
           active: r.active,
+          capacity: r.capacity ?? null,
           grade: g.name,
           gradeId: g.id,
           boardId: b.id,
@@ -198,6 +200,7 @@ function flatten(c: Config | null) {
         arrival: x.arrival,
         dispersal: x.dispersal,
         dayType: x.dayType || "full",
+        templateOnly: x.templateOnly || false,
         target: x.target,
         rule: x.rule,
         slots: x.slots,
@@ -208,6 +211,7 @@ function flatten(c: Config | null) {
         name: x.name,
         kind: x.kind,
         overridesHoliday: x.overridesHoliday || false,
+        operation: x.operation, configurationPart: x.configurationPart, parentId: x.parentId, scheduleId: x.scheduleId,
         target: x.target,
         rule: x.rule,
         boardId: b.id,
@@ -374,33 +378,36 @@ export function onboardingChecklist(
 export function calendarSummary(config: Config, start: string, end: string, boardId?: string, filter: ClassroomFilter = {}) {
   const rows = config.boards.filter((b) => !boardId || b.id === boardId).flatMap((b) =>
     selectedClassrooms(b, filter).filter((c) => c.active && b.grades.find((g) => g.id === c.gradeId)?.active).map((c) => {
-      const counts = { workingDays: 0, holidays: 0, halfDays: 0, unresolvedDays: 0 };
+      const counts = { instructionalMinutes: 0, workingDays: 0, validatedWorkingDays: 0, provisionalWorkingDays: 0, conflictingDays: 0, holidays: 0, halfDays: 0, unresolvedDays: 0 };
+      const classifications: string[] = [];
       const holidayDates: { date: string; reason: string }[] = [];
       const weeks = new Map<string, { days: number; working: number }>();
       for (let t = Date.parse(start); t <= Date.parse(end); t += 86400000) {
         const date = new Date(t).toISOString().slice(0, 10);
         const result = resolve(b, c.id, date, config);
+        classifications.push(result.status === "working" ? result.schedule?.dayType === "half" ? "half" : "full" : ["holiday", "non-working"].includes(result.status) ? "closed" : result.status === "missing" ? `missing-${result.expectedDayType}` : result.status);
         const monday = new Date(t); monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
         const weekKey = monday.toISOString().slice(0, 10);
         const week = weeks.get(weekKey) || { days: 0, working: 0 }; week.days++; weeks.set(weekKey, week);
         if (["holiday", "non-working"].includes(result.status)) {
           counts.holidays++; holidayDates.push({ date, reason: result.reason });
-        } else if (["conflict", "invalid"].includes(result.status)) counts.unresolvedDays++;
+        } else if (["conflict", "invalid"].includes(result.status)) { counts.unresolvedDays++; counts.conflictingDays++; }
         else {
           counts.workingDays++; week.working++;
           if (result.schedule?.dayType === "half") counts.halfDays++;
-          if (result.status === "missing") counts.unresolvedDays++;
+          if (result.status === "missing") { counts.unresolvedDays++; counts.provisionalWorkingDays++; }
+          else { counts.validatedWorkingDays++; counts.instructionalMinutes += result.schedule?.slots.filter(s=>s.kind==="period").reduce((n,s)=>n+s.end-s.start,0) || 0; }
         }
       }
       const fullWeekCounts = [...weeks.values()].filter((w) => w.days === 7).map((w) => w.working);
       const workingDaysPerWeek = fullWeekCounts.length && new Set(fullWeekCounts).size === 1 ? fullWeekCounts[0] : null;
-      return { boardId: b.id, board: b.name, classroomId: c.id, classroom: c.name, ...counts, fullWorkingDays: counts.workingDays - counts.halfDays, regularWeeklyWorkingDays: 7 - new Set(b.nonWorkingDays).size, workingDaysPerWeek,
+      return { boardId: b.id, board: b.name, classroomId: c.id, classroom: c.name, ...counts, classifications, fullWorkingDays: counts.validatedWorkingDays - counts.halfDays, regularWeeklyWorkingDays: config.resolverVersion===2 ? regularWorkingDays(b,c.id,config) : 7 - new Set(b.nonWorkingDays).size, workingDaysPerWeek,
         workingWeeks: [...weeks.values()].filter((w) => w.working > 0).length,
         holidayDates };
     }));
-  const same = (key: "workingDays" | "holidays" | "halfDays" | "workingWeeks" | "workingDaysPerWeek" | "regularWeeklyWorkingDays" | "fullWorkingDays") =>
-    rows.length && rows.every((row) => row[key] === rows[0][key] && JSON.stringify(row.holidayDates) === JSON.stringify(rows[0].holidayDates)) ? rows[0][key] : null;
+  const same = (key: "instructionalMinutes" | "workingDays" | "holidays" | "halfDays" | "workingWeeks" | "workingDaysPerWeek" | "regularWeeklyWorkingDays" | "fullWorkingDays" | "validatedWorkingDays" | "provisionalWorkingDays" | "conflictingDays" | "unresolvedDays") =>
+    rows.length && rows.every((row) => row[key] === rows[0][key] && JSON.stringify(row.classifications) === JSON.stringify(rows[0].classifications)) ? rows[0][key] : null;
   return { classrooms: rows.length, provisional: rows.some((row) => row.unresolvedDays > 0), calendarDays: Math.floor((Date.parse(end) - Date.parse(start)) / 86400000) + 1, mixed: rows.length > 1 && same("workingDays") === null,
-    workingDays: same("workingDays"), holidays: same("holidays"), halfDays: same("halfDays"),
+    instructionalMinutes: same("instructionalMinutes"), validatedWorkingDays: same("validatedWorkingDays"), provisionalWorkingDays: same("provisionalWorkingDays"), conflictingDays: same("conflictingDays"), unresolvedDays: same("unresolvedDays"), workingDays: same("workingDays"), holidays: same("holidays"), halfDays: same("halfDays"),
     workingWeeks: same("workingWeeks"), workingDaysPerWeek: same("workingDaysPerWeek"), regularWeeklyWorkingDays: rows.length && rows.every((row) => row.regularWeeklyWorkingDays === rows[0].regularWeeklyWorkingDays) ? rows[0].regularWeeklyWorkingDays : null, fullWorkingDays: same("fullWorkingDays"), rows };
 }

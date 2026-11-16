@@ -26,7 +26,7 @@ export function OnboardingCatalog({ rows, view, onViewChange, onOpen }: {
   const currentPage = Math.min(page, pages - 1);
   const nextStep = (row: RecordData) => row.progress === 100 ? "All steps completed" : row.checklist?.find((s: RecordData) => s.step === row.currentStep)?.title || `Step ${row.currentStep}`;
 
-  return <section className="onboarding-catalog" aria-label="Organization onboarding">
+  return <section className="onboarding-catalog" data-tone="info" aria-label="Organization onboarding">
     <div className="catalog-toolbar">
       <div className="search catalog-search"><Search size={16} aria-hidden="true" /><input aria-label="Search onboarding" placeholder="Search organizations or email" value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }} /></div>
       <label className="catalog-status"><span className="sr-only">Onboarding progress filter</span><select aria-label="Onboarding progress filter" value={status} onChange={(e) => { setStatus(e.target.value); setPage(0); }}>
@@ -38,7 +38,7 @@ export function OnboardingCatalog({ rows, view, onViewChange, onOpen }: {
         <button aria-pressed={view === "cards"} onClick={() => onViewChange("cards")}><LayoutGrid size={16} /> Card view</button>
       </div>
     </div>
-    {view === "list" ? <DataTable data={filtered} hideSearch columns={[
+    {view === "list" ? <DataTable data={filtered} hideSearch emptyTitle={rows.length && !filtered.length ? "No matching organizations" : undefined} emptyText={rows.length && !filtered.length ? "Adjust the search or progress filter." : undefined} columns={[
       { accessorKey: "name", header: "Organization", cell: (c) => <div className="catalog-organization"><button className="record-link" onClick={() => onOpen(c.row.original.id)}>{c.getValue()}</button><small>{c.row.original.email}</small></div> },
       { accessorKey: "status", header: "Status", cell: (c) => <Badge value={c.getValue()} /> },
       { id: "nextStep", header: "Current step", accessorFn: nextStep },

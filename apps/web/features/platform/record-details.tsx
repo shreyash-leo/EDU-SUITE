@@ -36,9 +36,9 @@ export function RecordDetails({ kind, record, organizations, institutions, subsc
     { value: "overview", label: "Overview" }, { value: "institutions", label: `Schools (${schools.length})` },
     { value: "subscriptions", label: `Subscriptions (${contracts.length})` }, { value: "onboarding", label: "Onboarding" }, { value: "administrator", label: "Administrator details" }, { value: "activity", label: "Activity history" },
   ] : [{ value: "overview", label: "Overview" }, ...(kind === "institution" ? [{ value: "academic-years", label: "Academic years" }] : [])];
-  return <div className="record-details">
+  return <div className="record-details" data-record-kind={kind} data-tone={kind === "institution" ? "teal" : kind === "subscription" ? "advanced" : "brand"}>
     <div className="record-details-summary">
-      <div className="record-details-identity">{kind === "institution" && record.logo ? <img className="record-details-logo" src={record.logo} alt={`${record.name} logo`} /> : <span className="record-type-icon">{kind === "institution" ? <School size={23} /> : <Building2 size={23} />}</span>}<div><p className="eyebrow">{label(kind)} information</p><h3>{record.name || record.reference}</h3><p>{kind === "organization" ? record.email : org ? <button className="record-link" onClick={() => onOpen("organization", org)}>{org.name}</button> : "Organization unavailable"}</p></div></div>
+      <div className="record-details-identity">{kind === "institution" && record.logo ? <img className="record-details-logo" src={record.logo} alt={`${record.name} logo`} /> : <span className="record-type-icon">{kind === "institution" ? <School size={23} /> : <Building2 size={23} />}</span>}<div><p className="eyebrow">{label(kind)} information</p><h3>{kind === "organization" ? "Organization profile" : kind === "institution" ? "School profile" : "Subscription details"}</h3><p>{kind === "organization" ? record.email : org ? <button className="record-link" onClick={() => onOpen("organization", org)}>{org.name}</button> : "Organization unavailable"}</p></div></div>
       <div className="row-actions"><Badge value={record.status} />{canEdit && <Button onClick={() => onEdit(kind, record)}><Pencil size={14} /> Edit</Button>}</div>
     </div>
     {kind === "organization" && <div className="record-summary-grid">

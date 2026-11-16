@@ -189,6 +189,7 @@ const ROUTES: [string, string, string][] = [
   ["POST", "/years/{id}/calendar-summary", "Scoped academic calendar totals and holiday dates"],
   ["POST", "/years/{id}/preview", "Resolve draft calendar with centralized backend rules"],
   ["POST", "/years/{id}/publish", "Publish reviewed draft"],
+  ["GET", "/years/{id}/published-output", "Versioned read-only active publication for future modules (up to 31 dates)"],
   ["GET", "/years/{id}/history", "List published versions"],
   ["GET", "/requests", "List change requests"],
   ["POST", "/requests", "Submit change request"],
@@ -369,9 +370,10 @@ class ApiController {
     m = path.match(/^\/subscriptions\/([^/]+)$/);
     if (m && method === "PUT")
       return service.saveSubscription(a, body, z.string().uuid().parse(m[1]));
-    m = path.match(/^\/years\/([^/]+)\/(config|draft|review|publish|history|preview|calendar-summary|preset-preview|preset-apply|impact|rule-preview)$/);
+    m = path.match(/^\/years\/([^/]+)\/(config|draft|review|publish|history|preview|calendar-summary|preset-preview|preset-apply|impact|rule-preview|published-output)$/);
     if (m) {
       const id = z.string().uuid().parse(m[1]);
+      if (m[2] === "published-output" && method === "GET") return service.publishedOutput(a,id,req.query);
       if (m[2] === "config") {
         if (method === "GET")
           return service.config(

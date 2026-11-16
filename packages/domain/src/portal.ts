@@ -1,8 +1,8 @@
-export const structureStatuses = ["NOT_STARTED", "DRAFT", "INCOMPLETE_ACTIVE", "ACTIVE", "DRAFT_CHANGES_PENDING"] as const;
+export const structureStatuses = ["NOT_STARTED", "DRAFT", "INCOMPLETE_ACTIVE", "ACTIVE", "DRAFT_CHANGES_PENDING", "EDITING_DRAFT_NO_CHANGES"] as const;
 export type StructureStatus = typeof structureStatuses[number];
-export function structureStatus(year?: { draftRevisionId?: string | null; publishedRevisionId?: string | null; publishedRevision?: { status: string } | null } | null): StructureStatus {
+export function structureStatus(year?: { draftRevisionId?: string | null; publishedRevisionId?: string | null; publishedRevision?: { status: string } | null } | null, hasChanges = true): StructureStatus {
   if (!year) return "NOT_STARTED";
-  if (year.draftRevisionId) return year.publishedRevisionId ? "DRAFT_CHANGES_PENDING" : "DRAFT";
+  if (year.draftRevisionId) return year.publishedRevisionId ? hasChanges ? "DRAFT_CHANGES_PENDING" : "EDITING_DRAFT_NO_CHANGES" : "DRAFT";
   return year.publishedRevisionId ? year.publishedRevision?.status === "INCOMPLETE_ACTIVE" ? "INCOMPLETE_ACTIVE" : "ACTIVE" : "NOT_STARTED";
 }
 export function operationalYear<T extends { id: string; startsAt: string | Date; endsAt: string | Date }>(years: T[], selected?: string, now = new Date()): T | null {
@@ -11,7 +11,7 @@ export function operationalYear<T extends { id: string; startsAt: string | Date;
   return sorted.find((y) => new Date(y.startsAt).getTime() <= time && new Date(y.endsAt).getTime() >= time) || sorted.find((y) => new Date(y.startsAt).getTime() <= time) || [...years].sort((a,b) => new Date(a.startsAt).getTime()-new Date(b.startsAt).getTime() || a.id.localeCompare(b.id))[0] || null;
 }
 export function structureAction(status: StructureStatus) {
-  return ({ NOT_STARTED: "Start Configuration", DRAFT: "Continue Configuration", INCOMPLETE_ACTIVE: "Complete Missing Details", ACTIVE: "Open Configuration", DRAFT_CHANGES_PENDING: "Review Changes" })[status];
+  return ({ NOT_STARTED: "Start Configuration", DRAFT: "Continue Configuration", INCOMPLETE_ACTIVE: "Complete Missing Details", ACTIVE: "Open Configuration", DRAFT_CHANGES_PENDING: "Review Changes", EDITING_DRAFT_NO_CHANGES: "Continue Editing" })[status];
 }
 
 /** Entry points stay distinct: inspection never implicitly opens an editor. */

@@ -2,8 +2,8 @@
 import { useEffect, useRef } from "react";
 import { useNavigation } from "./navigation";
 
-type Route = { page?: string; school?: string; onboarding?: string; workflow?: string; record?: string; organization?: string; intent?: string };
-const keys = ["page", "school", "onboarding", "workflow", "record", "organization", "intent"] as const;
+type Route = { year?: string; revision?: string; page?: string; school?: string; onboarding?: string; workflow?: string; record?: string; organization?: string; intent?: string };
+const keys = ["page", "school", "onboarding", "workflow", "record", "organization", "intent", "year", "revision"] as const;
 
 // Routes contain IDs and view names only. Credentials and form values never enter URLs.
 export function useWorkspaceLocation(enabled: boolean, state: Route, restore: (route: Route) => void) {

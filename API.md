@@ -158,3 +158,49 @@ Year selection: valid explicit school/year, otherwise current date-bounded year,
 Draft saves now audit `structure.updated` with stable-ID record changes. `Revision.updatedAt` is persisted for save ordering; existing snapshots retain their publication/creation time through migration backfill.
 
 Directory query `schoolStatus` additionally accepts empty, `ACTIVE` or `INACTIVE`. It is independent of the selected academic year's structure `status`, applies before SQL pagination, and combines with search/board filters. School Details/editor frontend routes use separate workflow names and an allowlisted intent; these view names grant no backend permissions.
+
+## Structure Management V1 published output (contract version 1)
+
+`GET /api/years/{academicYearId}/published-output?start=YYYY-MM-DD&end=YYYY-MM-DD&classroomId=UUID`
+
+Authenticated, read-only and organization/school scoped. The service reads **only the academic year's active published revision**. It never falls back to a working draft. No publication returns 404. An unknown published classroom returns 404; foreign organizations cannot access the year. `start` defaults to the year start and `end` defaults to at most 30 days later. Both endpoints are inclusive; maximum 31 dates per request, within the academic year. Invalid ranges return 400. Consumers can page through dates.
+
+The response includes:
+
+- `contractVersion: 1`, `readOnly: true`, organization/school/academic-year IDs, published revision ID and year/range boundaries.
+- Boards, academic sections, grades and classrooms with stable logical IDs; grade relationships use `sectionId`; classrooms are nested under their grade and expose `operationallyActive` (grade AND classroom active).
+- Per-classroom `dates`: effective `status`, `dayType`, holiday/half-day flags, winning `calendarRuleId`/schedule priority explanation when applicable, `scheduleId`, warnings/conflicts and provisional/unresolved flags. `teachingPeriods` contains stable slot IDs and integer minute intervals after midnight; `instructionalMinutes` sums teaching intervals only. Closed, inactive, missing, invalid or conflicting dates expose zero instructional minutes and no teaching intervals.
+- `schedules`: complete published templates with logical IDs and owner board IDs, never field-by-field merged overrides.
+- `summary`: effective totals for the requested window; `academicYearSummary`: the same calculations across the complete year. Each includes per-classroom counts when calendars differ; common totals are null when daily classifications differ. Internal daily classification arrays are omitted from these summary rows because the date output carries the requested daily results.
+
+Calendar totals distinguish calendar working dates, validated instructional dates, provisional missing-schedule dates, invalid/conflicting dates, full instructional days, half-days and closed dates. Working weeks are Monday-based buckets containing at least one calendar working date; they are not fractional equivalents of five-day weeks. `workingDaysPerWeek` is null if complete weeks differ (or none exist).
+
+Future WDM, Subject Allocation and Timetable integrations must key caches by organization, school, academic year AND `publishedRevisionId`. Re-read when that identifier changes. `structure.published` audit detail now records `previousPublishedRevisionId`, `newPublishedRevisionId`, stable affected entity IDs, changed bell/calendar rules and exact effective date/classroom changes. Rename-only changes can correctly have zero effective date changes. Audit records are the existing internal publication change source; this refinement does not add a broker, webhook, new module or external audit feed. Older audit records retain their original shape.
+
+New year creation accepts optional `anchors: "keep" | "drop" | "rebase"` (default `keep`) and `overlapReason` (10–1000 characters, mandatory for a new overlap). Rebase sets interval recurrence anchors to the new start date. Fixed-date and date-bounded rules are excluded from copies. Existing overlapping years remain unchanged. Current frontend mutation requests include revision IDs; optional IDs remain accepted for compatible older API clients, with existing lock checks still mandatory.
+
+## Three-part scheduling (resolver version 2)
+
+The existing configuration, preview, review, publication and published-output routes remain in use. Configuration JSON accepts optional `resolverVersion: 1 | 2`; omitted values retain legacy interpretation. The additive migration `202611160001_three_part_scheduling` must be applied before the updated API starts.
+
+- `POST /institutions/:id/years` accepts optional `resolverVersion: 2`. Fresh years created through the updated UI send this. Copied years preserve their source resolver.
+- `PUT /years/:id/config` persists the resolver on the working revision, under the existing revision identity, optimistic lock and organization license checks. A version-2 draft cannot be downgraded through this route. Existing drafts can explicitly adopt version 2; history/restore creates an independent working revision.
+- Calendar events accept optional `configurationPart: "default-holidays" | "advanced"`, `parentId` (permanent event UUID), and `scheduleId` (permanent schedule UUID). These fields persist in `CalendarEvent.scheduling`. Parent references must be acyclic, within the same revision and scheduling part; every child classroom must belong to a strictly more-specific subset of its parent. Invalid relationships may remain incomplete drafts but block publication.
+- Unclassified holidays in a version-2 configuration are treated as Default Holidays. Unclassified working/half-day events are advanced rules. Existing explicit holiday reopening flags are retained for legacy history but must be removed/replaced before publishing an adopted version-2 configuration.
+- `Schedule.templateOnly` defaults to false. A true value keeps a reusable special template dormant until selected by an advanced event. Linking an existing ordinary default does not remove its normal coverage. A linked template supplies its whole daily arrangement; the event supplies its occurrence and classroom scope.
+- `Classroom.capacity` is optional/null or a positive integer up to 10,000; it records student capacity and has no effect on classroom license consumption.
+- Version 2 resolves Default Holidays first, then Advanced Scheduling, then complete inherited Default Bell Timing. Holiday-family specificity is selected before dates are matched, so a shortened override removes only its parent's closure. Independent holidays and board weekly closures remain effective. Advanced rules cannot reopen them. Advanced children explicitly replace their own applicable parent; remaining competing rules use specific date, monthly/bounded recurrence, weekly recurrence and default precedence, followed by classroom, grade, section, board and school scope. Ties are conflicts.
+- Missing, invalid or conflicting operational schedules block version-2 publication. Legacy publication warning behavior remains unchanged.
+- Preview and annual summary requests accept full configuration JSON, including resolverVersion. `/calendar-summary` now includes `instructionalMinutes` in each classroom row and as a common total when applicable. Only validated teaching intervals contribute; holidays, routines and unresolved dates contribute zero.
+- Published output retains `contractVersion: 1` and adds `resolverVersion`. Existing stable identities, dates, daily teaching intervals and revision caching remain compatible. Old published revisions stay on resolver 1; publication is required before a version-2 draft can affect downstream output.
+
+Deleting a holiday parent or linked schedule does not silently discard dependent rules. They remain unresolved in the draft and must be repaired before publication. Academic-year copies omit fixed/date-bounded rules and recursively omit descendants or linked events whose required records were omitted, while preserving the source resolver and historical data.
+
+
+### Completion refinements
+
+Advanced events may also specify `operation: "timing"` with `kind: "working"`, `configurationPart: "advanced"` and a required `scheduleId`. This is a timing-only operation: it does not reopen a date closed by either Default Holidays or an advanced non-working condition. Timing-only children may replace timing-only parents; they cannot masquerade as calendar-status overrides. Remaining calendar-status and complete-template conflicts are still validated separately.
+
+Adopting version 2 converts legacy `nonWorkingDays` into explicit board weekly Default Holiday events and clears the draft's legacy toggle list. The original publication is untouched. Fresh UI-created version-2 years and newly registered boards use the same representation. These weekly families can be overridden directly at narrower scopes. Regular weekly working-day summaries resolve the effective holiday families per classroom; actual dates, monthly exceptions and instructional minutes continue to use full calendar resolution.
+
+Advanced rule creation now uses one event workflow for timing, working day, half-day and non-working conditions. Special-template creation edits timing only; the event supplies scope and recurrence. Temporary templates are persisted only when selected by the saved event. Effective previews sample both child and ancestor dates so shortening a vacation also shows reopened dates.

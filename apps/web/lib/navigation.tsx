@@ -163,7 +163,7 @@ export function NavigationProvider({
                 disabled={busy}
                 onClick={() => void decide("discard")}
               >
-                Discard & continue
+                Discard Unsaved Changes
               </ShadcnButton>
               <ShadcnButton
                 variant="default"

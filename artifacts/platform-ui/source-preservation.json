@@ -1,0 +1,23 @@
+{
+  "baselineFiles": 79,
+  "changedSinceUiStart": [
+    "apps/web/next-env.d.ts",
+    "apps/web/app/layout.tsx",
+    "apps/web/app/page.tsx",
+    "apps/web/components/data-table.tsx",
+    "apps/web/components/ui.tsx",
+    "apps/web/components/ui/button.tsx",
+    "apps/web/components/workspace/tabs.tsx",
+    "apps/web/features/auth/login.tsx",
+    "apps/web/features/platform/requests.tsx",
+    "apps/web/features/platform/onboarding-catalog.tsx",
+    "apps/web/features/platform/record-details.tsx",
+    "apps/web/features/platform/forms.tsx",
+    "apps/web/features/platform/academic-preset-catalogue.tsx",
+    "apps/web/features/structure/scope-rule.tsx",
+    "apps/web/features/structure/calendar.tsx",
+    "apps/web/features/structure/workspace.tsx",
+    "apps/web/features/client/portal.tsx"
+  ],
+  "businessSourceChanges": []
+}

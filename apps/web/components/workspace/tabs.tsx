@@ -11,7 +11,7 @@ export function WorkspaceTabs({ id, label, tabs, value, onChange, numbered = fal
   className?: string;
 }) {
   return <div role="tablist" aria-label={label} className={`workspace-tabs ${className}`}>
-    {tabs.map((tab, index) => <button key={tab.value} id={`${id}-tab-${tab.value}`} role="tab" aria-selected={value === tab.value} aria-controls={`${id}-panel-${tab.value}`} tabIndex={value === tab.value ? 0 : -1} disabled={disabled}
+    {tabs.map((tab, index) => <button key={tab.value} id={`${id}-tab-${tab.value}`} role="tab" data-complete={tab.complete || undefined} data-active={value===tab.value} aria-selected={value === tab.value} aria-controls={`${id}-panel-${tab.value}`} tabIndex={value === tab.value ? 0 : -1} disabled={disabled}
       onClick={() => onChange(tab.value)} onKeyDown={(event) => {
         const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
         if (next === null) return;

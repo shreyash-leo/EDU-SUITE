@@ -121,6 +121,7 @@ model AcademicYear {
   @@index([institutionId,startsAt])
 }
 model Revision {
+  resolverVersion Int @default(1)
   updatedAt DateTime @default(now()) @updatedAt
   id String @id @default(uuid())
   yearId String
@@ -175,6 +176,7 @@ model Grade {
   @@unique([boardId,entityKey])
 }
 model Classroom {
+  capacity Int?
   boardId String
   board RevisionBoard @relation(fields:[boardId],references:[id],onDelete:Cascade)
   id String @id
@@ -187,6 +189,7 @@ model Classroom {
   @@unique([boardId,name])
 }
 model Schedule {
+  templateOnly Boolean @default(false)
   id String @id
   boardId String
   board RevisionBoard @relation(fields:[boardId],references:[id],onDelete:Cascade)
@@ -200,6 +203,7 @@ model Schedule {
   slots Json
 }
 model CalendarEvent {
+  scheduling Json @default("{}")
   overridesHoliday Boolean @default(false)
   id String @id
   boardId String

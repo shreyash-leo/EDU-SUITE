@@ -49,6 +49,61 @@ integration("PostgreSQL service integration", () => {
     else await db.platformSetting.deleteMany({ where: { id: "platform" } });
     await db.$disconnect();
   });
+  it("round-trips three-part scheduling metadata and preserves legacy published revisions", async () => {
+    const {adoptScheduling}=await import("../packages/domain/src/scheduling");
+    const suffix=randomUUID().slice(0,8),org=await s.saveOrg(admin,{name:"Three-part "+suffix,email:`three-${suffix}@example.com`});created.push(org.id);
+    const school=await s.saveInstitution(admin,{organizationId:org.id,name:"Schedule "+suffix,registration:suffix,boards:["CBSE"],logo:"https://example.com/logo.png"});
+    await s.saveSubscription(admin,{organizationId:org.id,reference:"THREE-"+suffix,amount:1000,startsAt:"2026-01-01T00:00:00Z",endsAt:"2099-12-31T23:59:59Z",status:"ACTIVE",agreementStatus:"SIGNED",paymentStatus:"PAID",classroomLimit:2,userLimit:1});
+    const year=await s.createYear(admin,school.id,{label:"2026–27",start:"2026-11-01",end:"2026-11-30"});
+    let draft=await s.config(admin,year.id);const b=draft.config.boards[0],section={id:randomUUID(),name:"Primary"},room={id:randomUUID(),name:"1A",active:true,capacity:35};b.sections=[section];b.grades=[{id:randomUUID(),name:"1",active:true,sectionId:section.id,classrooms:[room]}];
+    b.schedules=[{id:randomUUID(),name:"Day",arrival:480,dispersal:540,target:{scope:"school",ids:[]},rule:{type:"default",weekdays:[],intervalWeeks:1},slots:[{id:randomUUID(),name:"P",kind:"period",start:480,end:540}]}];
+    await s.saveConfig(admin,year.id,{config:draft.config,lock:draft.revision.lock});draft=await s.config(admin,year.id);await s.publish(admin,year.id,{lock:draft.revision.lock,summary:"Legacy version"});const legacy=draft.revision.id;
+    await s.draft(admin,year.id,{});draft=await s.config(admin,year.id);const next=adoptScheduling(draft.config),board=next.boards[0];
+    const parent={id:randomUUID(),name:"Vacation",kind:"holiday" as const,configurationPart:"default-holidays" as const,target:{scope:"school" as const,ids:[]},rule:{type:"recurring" as const,weekdays:[0,1,2,3,4,5,6],intervalWeeks:1,startsOn:"2026-11-01",endsOn:"2026-11-05"}};
+    board.events.push(parent,{...parent,id:randomUUID(),name:"Short vacation",parentId:parent.id,target:{scope:"classrooms",ids:[room.id]},rule:{...parent.rule,endsOn:"2026-11-03"}});
+    const special={...board.schedules[0],id:randomUUID(),name:"Linked short day",dayType:"half" as const,templateOnly:true};board.schedules.push(special);board.events.push({id:randomUUID(),name:"Half day",kind:"half-day",configurationPart:"advanced",scheduleId:special.id,target:{scope:"classrooms",ids:[room.id]},rule:{type:"date",date:"2026-11-06",weekdays:[],intervalWeeks:1}});
+    board.events.push({id:randomUUID(),name:"Special timing only",kind:"working",operation:"timing",configurationPart:"advanced",scheduleId:board.schedules[0].id,target:{scope:"classrooms",ids:[room.id]},rule:{type:"date",date:"2026-11-07",weekdays:[],intervalWeeks:1}});
+    await s.saveConfig(admin,year.id,{config:next,lock:draft.revision.lock});draft=await s.config(admin,year.id);expect(draft.config.resolverVersion).toBe(2);expect(draft.config.boards[0].events.find(e=>e.operation)?.operation).toBe("timing");expect(draft.config.boards[0].grades[0].classrooms[0].capacity).toBe(35);expect(draft.config.boards[0].events.find(e=>e.parentId)?.parentId).toBe(parent.id);expect(draft.config.boards[0].schedules.find(e=>e.id===special.id)?.templateOnly).toBe(true);
+    await expect(s.saveConfig(admin,year.id,{config:{...draft.config,resolverVersion:1},lock:draft.revision.lock})).rejects.toThrow(/cannot downgrade/);
+    expect((await s.config(admin,year.id,legacy)).config.resolverVersion).toBe(1);
+    const preview=await s.preview(admin,year.id,{board:draft.config.boards[0],dates:["2026-11-04","2026-11-06"]});expect(preview[0].status).toBe("working");expect(preview[1].results[0].schedule?.dayType).toBe("half");
+    await s.publish(admin,year.id,{lock:draft.revision.lock,summary:"Three-part publication"});expect((await s.publishedOutput(admin,year.id,{start:"2026-11-04",end:"2026-11-06"})).resolverVersion).toBe(2);expect((await s.config(admin,year.id,legacy)).config.resolverVersion).toBe(1);
+    await expect(s.config({...admin,role:"ORG_ADMIN",organizationId:randomUUID()},year.id)).rejects.toThrow();
+  });
+  it("protects publication output, distinguishes unchanged drafts and records overlap exceptions", async () => {
+    const suffix=randomUUID().slice(0,8),org=await s.saveOrg(admin,{name:"Refinement "+suffix,email:`refinement-${suffix}@example.com`});created.push(org.id);
+    await db.organization.update({where:{id:org.id},data:{status:"ACTIVE"}});
+    const school=await s.saveInstitution(admin,{organizationId:org.id,name:"Refinement School "+suffix,registration:suffix,boards:["CBSE","ICSE"],logo:"https://example.com/logo.png"});
+    await s.saveSubscription(admin,{organizationId:org.id,reference:"REF-"+suffix,amount:1000,startsAt:"2026-01-01T00:00:00Z",endsAt:"2099-12-31T23:59:59Z",status:"ACTIVE",agreementStatus:"SIGNED",paymentStatus:"PAID",classroomLimit:4,userLimit:1});
+    const tenant:Actor={...admin,role:"ORG_ADMIN",organizationId:org.id};
+    const year=await s.createYear(tenant,school.id,{label:"2026–27",start:"2026-04-01",end:"2027-03-31"});
+    await expect(s.publishedOutput(tenant,year.id,{})).rejects.toThrow(/No active published/);
+    await expect(s.createYear(tenant,school.id,{label:"Accidental overlap",start:"2027-01-01",end:"2027-06-30"})).rejects.toThrow(/overlap/);
+    const exception=await s.createYear(tenant,school.id,{label:"Authorized overlap",start:"2027-01-01",end:"2027-06-30",overlapReason:"Separate transition cohort approved"});
+    expect((await db.auditLog.findFirst({where:{entityId:exception.id,action:"academic-year.created"}}))?.detail).toMatchObject({overlapReason:"Separate transition cohort approved"});
+    const draft=await s.config(tenant,year.id);
+    for(const b of draft.config.boards){const section={id:randomUUID(),name:"Primary"};b.sections.push(section);b.grades.push({id:randomUUID(),name:"Grade 1",active:true,sectionId:section.id,classrooms:[{id:randomUUID(),name:"1A",active:true}]});}
+    draft.config.boards[0].schedules.push({id:randomUUID(),name:"Common day",arrival:480,dispersal:540,target:{scope:"school",ids:[]},rule:{type:"default",weekdays:[],intervalWeeks:1},slots:[{id:randomUUID(),name:"Teaching",kind:"period",start:480,end:540}]});
+    await s.saveConfig(tenant,year.id,{config:draft.config,lock:draft.revision.lock,revisionId:draft.revision.id});
+    let current=await s.config(tenant,year.id);await s.publish(tenant,year.id,{lock:current.revision.lock,revisionId:current.revision.id,summary:"Initial publication"});
+    const first=await s.publishedOutput(tenant,year.id,{start:"2026-11-16",end:"2026-11-16"});
+    expect(first.boards[0].grades[0].classrooms[0].dates[0].instructionalMinutes).toBe(60);
+    expect(first.summary.validatedWorkingDays).toBe(1); expect(first.academicYearSummary.validatedWorkingDays).toBe(313);expect(first.contractVersion).toBe(1);
+    await s.draft(tenant,year.id,{});current=await s.config(tenant,year.id);
+    expect((await s.clientSchool(tenant,school.id,year.id)).status).toBe("EDITING_DRAFT_NO_CHANGES");
+    const directory=await s.clientPortal(tenant,{schoolId:school.id,yearId:year.id});expect(directory.rows.find(r=>r.id===school.id).structureStatus).toBe("EDITING_DRAFT_NO_CHANGES");expect(directory.metrics.pending).toBe(0);
+    current.config.boards[0].grades[0].name="Unpublished grade";
+    const saved=await s.saveConfig(tenant,year.id,{config:current.config,lock:current.revision.lock,revisionId:current.revision.id});
+    await expect(s.saveConfig(tenant,year.id,{config:current.config,lock:current.revision.lock,revisionId:current.revision.id})).rejects.toThrow(/changed/);
+    expect((await s.clientSchool(tenant,school.id,year.id)).status).toBe("DRAFT_CHANGES_PENDING");
+    expect((await s.publishedOutput(tenant,year.id,{start:"2026-11-16",end:"2026-11-16"})).boards[0].grades[0].name).toBe("Grade 1");
+    await expect(s.publishedOutput({...tenant,organizationId:randomUUID()},year.id,{})).rejects.toThrow();
+    await expect(s.publishedOutput(tenant,year.id,{start:"2026-01-01"})).rejects.toThrow(/within/);
+    await s.publish(tenant,year.id,{lock:saved.lock,revisionId:current.revision.id,summary:"Second publication"});
+    const log=await db.auditLog.findFirst({where:{entityId:year.id,action:"structure.published"},orderBy:{createdAt:"desc"}});
+    expect(log?.detail).toMatchObject({previousPublishedRevisionId:first.publishedRevisionId,newPublishedRevisionId:current.revision.id,effective:{changedDates:0}});
+    expect((await s.config(tenant,year.id,first.publishedRevisionId)).config.boards[0].grades[0].name).toBe("Grade 1");
+  });
   it("persists shared calendars, explicit reopening, scoped summaries and tenant profile", async () => {
     const suffix = randomUUID().slice(0, 8);
     const org = await s.saveOrg(admin, { name: "Calendar Scope " + suffix, email: `${suffix}-calendar@example.com` }); created.push(org.id);
@@ -86,6 +141,14 @@ integration("PostgreSQL service integration", () => {
     expect(afterSync.config.boards.map((b) => b.name)).toContain("IB");
     expect(afterSync.revision.lock).toBe(beforeSync.revision.lock + 1);
     expect(afterSync.published?.boards.map((b) => b.name)).not.toContain("IB");
+    const request = await db.changeRequest.create({ data: { organizationId: org.id, institutionId: school.id, proposed: { boards: ["CBSE", "ICSE", "IB", "ISC"] }, reason: "Add approved affiliation" } });
+    await s.resolveRequest(admin, request.id, { approve: true, resolution: "Approved affiliation" });
+    const approved = await s.config(admin, year.id);
+    expect(approved.config.boards.map(b => b.name)).toEqual(["CBSE", "ICSE", "IB", "ISC"]);
+    expect(approved.revision.lock).toBe(afterSync.revision.lock + 1);
+    expect(approved.published?.boards.map(b => b.name)).not.toContain("ISC");
+    await expect(s.saveConfig(admin, year.id, { config: afterSync.config, lock: afterSync.revision.lock, revisionId: afterSync.revision.id })).rejects.toThrow(/changed|stale|reload/i);
+
     await expect(s.saveInstitution(admin, { ...school, organizationId: org.id, boards: ["CBSE"] }, school.id)).rejects.toThrow(/cannot be removed/);
     const tenant: Actor = { ...admin, role: "ORG_ADMIN", organizationId: org.id };
     expect((await s.organizationProfile(tenant)).id).toBe(org.id);

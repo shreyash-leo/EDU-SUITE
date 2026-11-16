@@ -54,11 +54,12 @@ export function ChangeReview({
   return (
     <section className="change-review">
       <h3>Changes in this publication</h3>
-      <div className="tabs compact">
+      <div className="tabs compact" role="group" aria-label="Filter publication changes">
         {["all", "added", "updated", "deleted"].map((k) => (
           <button
             type="button"
             className={filter === k ? "active" : ""}
+            aria-pressed={filter === k}
             key={k}
             onClick={() => setFilter(k)}
           >
@@ -66,6 +67,7 @@ export function ChangeReview({
           </button>
         ))}
       </div>
+      {changes.length > 0 && !changes.some((c) => filter === "all" || c.kind === filter) && <p>No {filter} changes in this publication.</p>}
       {!changes.length && (
         <p>No structural changes from the current publication.</p>
       )}

@@ -392,6 +392,7 @@ export function Onboarding({
   ];
   return (
     <div className="onboarding process-workspace">
+      <header className="journey-summary" data-tone="info"><span className="semantic-icon"><Route size={21}/></span><div><p className="eyebrow">Organization onboarding</p><h2>Client setup progress</h2><p>Step {step} of 7 · {names[step-1]}</p></div><div className="journey-progress"><strong>{overview?.progress ?? Math.round(org.completedSteps.length/7*100)}% complete</strong><progress max={100} value={overview?.progress ?? Math.round(org.completedSteps.length/7*100)} aria-label="Organization onboarding completion"/></div></header>
       <WorkspaceTabs id={tabsId} label="Onboarding steps" className="process-tabs" numbered disabled={busy}
         value={String(step)} onChange={(value) => setStep(Number(value))}
         tabs={names.map((name, index) => {
@@ -403,10 +404,7 @@ export function Onboarding({
         <h2>{names[step - 1]}</h2>
         {overview && (
           <div className="onboarding-status">
-            <div className="progress-cell">
-              <progress max={100} value={overview.progress} />
-              <span>{overview.progress}% complete</span>
-            </div>
+
             <small>
               Last updated{" "}
               {new Date(overview.updatedAt).toLocaleString("en-IN")}

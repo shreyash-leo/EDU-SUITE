@@ -1,4 +1,6 @@
 "use client";
+import {PlatformOperations, WorkspaceSkeleton} from "../components/platform-primitives";
+import {pageTone} from "../lib/design-system";
 import { ClientPortal, ClientSchoolDetails, type SchoolIntent } from "../features/client/portal";
 import { RegistrationRequestForm } from "../features/platform/requests";
 import { AcademicPresetCatalogue } from "../features/platform/academic-preset-catalogue";
@@ -165,6 +167,7 @@ export default function App() {
   const [sidebar, setSidebar] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [clientView, setClientView] = useState<"directory" | "details" | "workspace">("directory");
+  const [selectedRevision, setSelectedRevision] = useState<string | undefined>(), [selectedYear, setSelectedYear] = useState<string | undefined>();
   const [schoolIntent, setSchoolIntent] = useState<SchoolIntent>("default");
   const [institution, setInstitution] = useState<RecordData | null>(null);
   useEffect(() => {
@@ -217,17 +220,18 @@ export default function App() {
       .finally(() => setLoading(false));
   }, [refresh]);
   useWorkspaceLocation(!!user && !user.mustChangePassword && dataReady, {
-    page, intent: clientView === "workspace" ? schoolIntent : undefined, school: institution?.id, onboarding: onboardId || undefined,
+    page, year: clientView === "workspace" ? selectedYear : undefined, revision: clientView === "workspace" ? selectedRevision : undefined, intent: clientView === "workspace" ? schoolIntent : undefined, school: institution?.id, onboarding: onboardId || undefined,
     workflow: modal && !["credentials", "account", "orgStatus", "institutionAction"].includes(modal.type) ? modal.type : user?.role !== "PLATFORM_ADMIN" && clientView !== "directory" ? clientView === "details" ? "schoolDetails" : "schoolWorkspace" : undefined,
     record: modal?.type === "credentials" ? undefined : modal?.record?.id,
     organization: modal?.organizationId,
   }, (route) => {
     const platform = user?.role === "PLATFORM_ADMIN";
     const allowed = platform ? nav : clientNav;
-    setPage(allowed.some((n) => n.name === route.page) ? route.page! : platform ? "Dashboard" : "Overview");
+    setPage((allowed.some((n) => n.name === route.page) || (!platform && route.page === "Change requests")) ? route.page! : platform ? "Dashboard" : "Overview");
     setInstitution(route.school ? data.institutions.find((i: RecordData) => i.id === route.school && i.status !== "DELETION_PENDING") || null : null);
     setOnboardId(platform && data.organizations.some((o: RecordData) => o.id === route.onboarding) ? route.onboarding! : "");
     if (!platform) {
+      setSelectedYear(route.year); setSelectedRevision(route.revision);
       setClientView(route.workflow === "schoolDetails" ? "details" : route.workflow === "schoolWorkspace" ? "workspace" : "directory");
       setSchoolIntent(["default", "review", "calendar", "grades", "edit", "bell", "history"].includes(route.intent || "") ? route.intent as SchoolIntent : "default");
       if (["schoolDetails", "schoolWorkspace"].includes(route.workflow || "")) { setModalState(null); return; }
@@ -240,6 +244,7 @@ export default function App() {
   });
   function openClientSchool(school: RecordData, view: "details" | "workspace", intent: SchoolIntent = "default") {
     void navigate(() => {
+      setSelectedRevision(undefined); setSelectedYear(school.yearId);
       const registered = data.institutions.find((i: RecordData) => i.id === school.id) || school;
       if (school.yearId) sessionStorage.setItem(`plan-year-${school.id}`, school.yearId);
       sessionStorage.setItem("plan-selected-school", school.id);
@@ -408,7 +413,7 @@ export default function App() {
     },
   ];
   return (
-    <div className={"app-shell" + (collapsed ? " sidebar-collapsed" : "")}>
+    <div className={"app-shell" + (collapsed ? " sidebar-collapsed" : "")} data-workspace={admin ? "platform" : "organization"}>
       <a className="skip-link" href="#main-workspace" onClick={(e) => { e.preventDefault(); document.getElementById("main-workspace")?.focus(); }}>Skip to workspace</a>
       <WorkspaceHeader user={user} sections={admin ? nav : clientNav}
         organizations={admin ? data.organizations : []} institutions={data.institutions}
@@ -441,11 +446,12 @@ export default function App() {
           </div>
         </div>
         <p className="nav-caption">Navigation</p>
-        <nav>
+        <nav aria-label="Main navigation">
           {(admin ? nav : clientNav
           ).map((n) => (
             <button
               key={n.name}
+              data-tone={pageTone(n.name)}
               title={n.name}
               aria-label={n.name}
               aria-current={(page === n.name || (!admin && page === "Dashboard" && n.name === "Overview")) ? "page" : undefined}
@@ -533,7 +539,7 @@ export default function App() {
           </div>
           <div className="topbar-right"><span className="workspace-role"><ShieldCheck size={14} />{admin ? "Platform administration" : "School management"}</span></div>
         </header>
-        <main className="main" id="main-workspace" tabIndex={-1}>
+        <main className="main" id="main-workspace" tabIndex={-1} data-page={page}>
           {data["workspace-settings"]?.maintenanceNotice && (
             <div className="notice amber-notice" role="status">
               {data["workspace-settings"].maintenanceNotice}
@@ -543,7 +549,7 @@ export default function App() {
             <div className="notice error" role="alert">
               <AlertCircle size={17} />
               {error}
-              <button className="icon-button" onClick={() => setError("")}>
+              <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}>
                 <X size={15} />
               </button>
             </div>
@@ -580,6 +586,7 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <PlatformOperations institutions={data.institutions} subscriptions={data.subscriptions} requests={data.requests} onboarding={data.onboarding || []} onPage={(next)=>void navigate(()=>setPage(next))} onOnboarding={openOnboarding}/>
               <section className="workspace-panel" aria-labelledby="recent-organizations-heading">
                 <div className="section-head">
                   <div>
@@ -606,14 +613,7 @@ export default function App() {
                   ]}
                 />
               </section>
-              <div className="bottom-note">
-                <ShieldCheck size={17} />
-                <span>
-                  One connected platform. Independent, secure organization
-                  workspaces.
-                </span>
-                <span className="tiny-orange">PLAN EDU SUITE</span>
-              </div>
+
             </>
           )}
           {admin && page === "Organizations" && (
@@ -803,7 +803,7 @@ export default function App() {
           {admin && page === "Onboarding" && (
             currentOrg ? <>
               <button className="text-back" onClick={() => void navigate(() => setOnboardId(""))}><ArrowLeft size={14} /> All onboarding</button>
-              <PageHead eyebrow="Organization onboarding" title={currentOrg.name}
+              <PageHead tone="info" eyebrow="Organization onboarding" title={currentOrg.name}
                 text="Complete the steps below. Saved progress is retained when you leave."
                 action={<Button onClick={() => openDetails("organization", currentOrg)}>View organization <ArrowUpRight size={14} /></Button>} />
               <Onboarding key={currentOrg.id}
@@ -914,7 +914,7 @@ export default function App() {
                 text="Review school registration changes and their resolution history."
                 action={!admin ? <Button variant="dark" onClick={() => setModal({ type: "request" })}><Plus size={15} /> Request registration change</Button> : undefined}
               />
-              {admin && <div className="tabs compact"><button className={settingsView === "requests" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("requests"))}>Change requests</button><button className={settingsView === "settings" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("settings"))}>Platform settings</button><button className={settingsView === "activity" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("activity"))}>Activity history</button></div>}
+              {admin && <div className="tabs compact"><button aria-pressed={settingsView === "requests"} className={settingsView === "requests" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("requests"))}>Change requests</button><button aria-pressed={settingsView === "settings"} className={settingsView === "settings" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("settings"))}>Platform settings</button><button aria-pressed={settingsView === "activity"} className={settingsView === "activity" ? "active" : ""} onClick={() => void navigate(() => setSettingsView("activity"))}>Activity history</button></div>}
               {(!admin || settingsView === "requests") && (
               <DataTable
                 data={data.requests}
@@ -1058,8 +1058,12 @@ export default function App() {
           {!admin && page === "Account & Subscription" && <>
             <PageHead eyebrow="Organization account" title="Account & subscription" text="Your registered organization and shared contractual allowances."
               action={<div className="row-actions"><Button onClick={() => setModal({ type: "account" })}>Change password</Button><Button onClick={() => setPage("Change requests")}>Registration change requests</Button></div>} />
-            <DetailGrid record={data["organization-profile"] || {}} keys={["name", "legalName", "registration", "contactName", "email", "phone", "address", "city", "state", "postalCode"]} />
-            {data.usage[0] && <div className="notice"><strong>Organization allowance</strong><span>{data.usage[0].used} / {data.usage[0].limit} classrooms · {data.usage[0].users} / {data.usage[0].userLimit} users</span></div>}
+            <div className="account-information" aria-label="Organization details">
+              <section><h2>Organization identity</h2><DetailGrid record={data["organization-profile"] || {}} keys={["name", "legalName", "registration"]} /></section>
+              <section><h2>Contact information</h2><DetailGrid record={data["organization-profile"] || {}} keys={["contactName", "email", "phone"]} /></section>
+              <section><h2>Registered address</h2><DetailGrid record={data["organization-profile"] || {}} keys={["address", "city", "state", "postalCode"]} /></section>
+            </div>
+            {data.usage[0] && <div className="notice"><strong>Organization allowance</strong><span>Licensed Classrooms: {data.usage[0].used} / {data.usage[0].limit} · Remaining Organization Allowance: {Math.max(0,data.usage[0].limit-data.usage[0].used)} · {data.usage[0].users} / {data.usage[0].userLimit} users</span></div>}
             <h2>Subscription validity</h2><DataTable data={data["organization-profile"]?.subscriptions || []} columns={[
               { accessorKey: "reference", header: "Contract" }, { accessorKey: "status", header: "Status" },
               { accessorKey: "classroomLimit", header: "Classroom allowance" }, { accessorKey: "userLimit", header: "User allowance" },
@@ -1067,7 +1071,7 @@ export default function App() {
             ]} />
           </>}
           {!admin && !["Change requests", "Account & Subscription"].includes(page) && (
-            clientView === "workspace" && institution ? <Structure key={institution.id + schoolIntent} institution={institution} workspaceSection={page === "Review & History" ? "Review & History" : "Structure Management"} initialIntent={schoolIntent} onOpenStructure={() => { setPage("Structure Management"); setSchoolIntent("default"); }} onBack={() => { setClientView("directory"); setPage("Structure Management"); }} notify={notify} /> :
+            clientView === "workspace" && institution ? <Structure key={institution.id} institution={institution} workspaceSection={page === "Review & History" ? "Review & History" : "Structure Management"} initialIntent={schoolIntent} initialRevision={selectedRevision} initialYear={selectedYear} onRevisionSelected={(revision, year) => { setSelectedRevision(revision); setSelectedYear(year); }} onOpenStructure={() => { setPage("Structure Management"); setSchoolIntent("default"); }} onBack={() => { setClientView("directory"); setPage("Structure Management"); }} notify={notify} /> :
             clientView === "details" && institution ? <ClientSchoolDetails key={institution.id} schoolId={institution.id} onBack={() => { setClientView("directory"); setPage("Schools"); }} onOpen={openClientSchool} onRequest={(record) => setModal({ type: "schoolRequest", record })} /> :
             <ClientPortal key={user.id} page={page} userId={user.id} organizationName={user.organizationName} onOpen={openClientSchool} onAccount={() => { setClientView("directory"); setPage("Account & Subscription"); }} onDirectory={() => { setClientView("directory"); setPage("Schools"); }} />
           )}

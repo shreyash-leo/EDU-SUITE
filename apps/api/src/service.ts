@@ -1,3 +1,6 @@
+import { adoptScheduling } from "../../../packages/domain/src/scheduling";
+import { publishedOutput } from "../../../packages/domain/src/published-output";
+import { effectiveImpact } from "../../../packages/domain/src/refinement";
 import { clientDirectory, clientSchool } from "./client-portal";
 import { configurationImpact, assertStableOwnership } from "../../../packages/domain/src/impact";
 import { applyAcademicPreset, presetSelectionSchema } from "../../../packages/domain/src/presets";
@@ -414,7 +417,7 @@ export class AppService {
           const draft = await readConfig(tx, year.draftRevisionId!);
           const missing = result.boards.filter((name) => !draft.boards.some((board) => board.name === name));
           if (missing.length) {
-            draft.boards.push(...emptyConfig(missing, randomUUID).boards);
+            draft.boards.push(...(draft.resolverVersion === 2 ? adoptScheduling(emptyConfig(missing, randomUUID),randomUUID) : emptyConfig(missing, randomUUID)).boards);
             await writeConfig(tx, year.draftRevisionId!, draft);
             await tx.revision.update({ where: { id: year.draftRevisionId! }, data: { lock: { increment: 1 } } });
           }
@@ -631,6 +634,9 @@ export class AppService {
         start: z.string().refine(validDate),
         end: z.string().refine(validDate),
         copyFrom: z.string().uuid().optional(),
+        resolverVersion: z.literal(2).optional(),
+        anchors: z.enum(["keep", "drop", "rebase"]).default("keep"),
+        overlapReason: z.string().trim().min(10).max(1000).optional(),
       })
       .refine(
         (d) =>
@@ -644,7 +650,10 @@ export class AppService {
       await lockOrganization(tx, identity.organizationId);
       await tx.$queryRaw`SELECT id FROM "Institution" WHERE id=${institutionId} FOR UPDATE`;
       const i = await this.institution(a, institutionId, tx);
+      const overlaps = await tx.academicYear.findMany({ where: { institutionId, startsAt: { lte: new Date(data.end) }, endsAt: { gte: new Date(data.start) } }, select: { id: true, label: true } });
+      if (overlaps.length && !data.overlapReason) throw new BadRequestException("Academic-year dates overlap an existing year. Provide a deliberate overlap exception reason (at least 10 characters).");
       let c = emptyConfig(i.boards, randomUUID);
+      if (data.resolverVersion) c = adoptScheduling(c, randomUUID);
       if (data.copyFrom) {
         const old = await this.year(a, data.copyFrom, tx);
         if (old.institutionId !== institutionId)
@@ -657,10 +666,11 @@ export class AppService {
           await readConfig(
             tx,
             (old.publishedRevisionId || old.draftRevisionId)!,
-          ),
+          ), { anchors: data.anchors, start: data.start },
         );
       }
-      c.boards.push(...emptyConfig(i.boards.filter((name) => !c.boards.some((b) => b.name === name)), randomUUID).boards);
+      const additionalBoards = emptyConfig(i.boards.filter((name) => !c.boards.some((b) => b.name === name)), randomUUID);
+      c.boards.push(...(c.resolverVersion===2 ? adoptScheduling(additionalBoards,randomUUID) : additionalBoards).boards);
       const y = await tx.academicYear.create({
         data: {
           institutionId,
@@ -684,7 +694,7 @@ export class AppService {
         where: { id: y.id },
         data: { draftRevisionId: r.id },
       });
-      await audit(tx, a, "academic-year.created", y.id);
+      await audit(tx, a, "academic-year.created", y.id, { anchors: data.anchors, overlaps, overlapReason: data.overlapReason || null });
       return y;
     }, { timeout: 30000 });
   }
@@ -734,7 +744,8 @@ export class AppService {
         },
       });
       const restored = await readConfig(tx, source);
-      restored.boards.push(...emptyConfig(owner.boards.filter((name) => !restored.boards.some((b) => b.name === name)), randomUUID).boards);
+      const additionalBoards = emptyConfig(owner.boards.filter((name) => !restored.boards.some((b) => b.name === name)), randomUUID);
+      restored.boards.push(...(restored.resolverVersion===2 ? adoptScheduling(additionalBoards,randomUUID) : additionalBoards).boards);
       await assertClassroomChange(tx, owner.organizationId, yearId, y.publishedRevisionId ? await readConfig(tx, y.publishedRevisionId) : { boards: [] }, restored);
       await writeConfig(tx, r.id, restored);
       await tx.academicYear.update({
@@ -778,6 +789,7 @@ export class AppService {
             "Boards must match the registered affiliations",
           );
         const old = await readConfig(tx, r.id);
+        if (old.resolverVersion === 2 && config.resolverVersion !== 2) throw new BadRequestException("A three-part scheduling draft cannot downgrade its resolver. Restore an earlier revision as a separate draft instead.");
         try { assertStableOwnership(old, config); } catch (error) { throw new BadRequestException((error as Error).message); }
         await assertClassroomChange(tx, i.organizationId, yearId, old, config);
         const refs = review(
@@ -796,7 +808,10 @@ export class AppService {
           data: { lock: { increment: 1 } },
         });
         const changes = configurationChanges(old, config);
-        if (changes.length) await audit(tx, a, "structure.updated", yearId, { revisionId: r.id, changes });
+        if (changes.length) await audit(tx, a, "structure.updated", yearId, { revisionId: r.id, resolverVersion: config.resolverVersion || 1, changes });
+        const reopenings=config.boards.flatMap(b=>b.events.filter(e=>e.overridesHoliday && e.kind==="working" && e.rule.type==="date").map(e=>({...e,ownerBoardId:b.id})));
+        const prior=new Map(old.boards.flatMap(b=>b.events.map(e=>[e.id,JSON.stringify(e)] as const)));
+        for(const e of reopenings) { const {ownerBoardId,...event}=e; if(prior.get(e.id)!==JSON.stringify(event)) await audit(tx,a,"calendar.reopening-authorized",yearId,{revisionId:r.id,eventId:e.id,ownerBoardId,target:e.target,date:e.rule.date}); }
         return { lock: r.lock + 1, savedAt: new Date(), license: await organizationUsage(tx, i.organizationId) };
       },
       { timeout: 30000 },
@@ -814,7 +829,7 @@ export class AppService {
     if (saved.revision.lock !== input.lock) throw new ConflictException("This draft changed. Reload the suggested structure preview before applying it.");
     let result: ReturnType<typeof applyAcademicPreset>;
     try { result = applyAcademicPreset(saved.config, input.boardId, input.selection, randomUUID); } catch (error) { throw new BadRequestException((error as Error).message); }
-    const impact = configurationImpact(saved.config, result.config);
+    const impact = { ...configurationImpact(saved.config, result.config), effective: effectiveImpact(saved.config,result.config,saved.year.startsAt.toISOString().slice(0,10),saved.year.endsAt.toISOString().slice(0,10)) };
     if (apply) {
       const savedResult = await this.saveConfig(a, yearId, { config: result.config, lock: input.lock, revisionId: saved.revision.id });
       return { ...savedResult, createdGrades: result.createdGrades, reusedGrades: result.reusedGrades, createdSections: result.createdSections, impact };
@@ -828,7 +843,7 @@ export class AppService {
     if (input.revisionId && input.revisionId !== saved.revision.id) throw new ConflictException("The working draft was replaced. Reload before previewing changes.");
     if (saved.revision.lock !== input.lock) throw new ConflictException("This draft changed. Reload before previewing changes.");
     try { assertStableOwnership(saved.config, input.config); } catch (error) { throw new BadRequestException((error as Error).message); }
-    return configurationImpact(saved.config, input.config);
+    return { ...configurationImpact(saved.config, input.config), effective: effectiveImpact(saved.config,input.config,saved.year.startsAt.toISOString().slice(0,10),saved.year.endsAt.toISOString().slice(0,10)) };
   }
   async rulePreview(a: Actor, yearId: string, body: unknown) {
     const year = await this.year(a, yearId);
@@ -883,7 +898,7 @@ export class AppService {
     if (license.overLimit) issues.push({ severity: "warning", message: `Organization exceeds its classroom allowance (${license.used} / ${license.limit}). Additional classrooms are blocked.` });
     return {
       changes: configurationChanges(published, config),
-      impact: configurationImpact(published, config),
+      impact: { ...configurationImpact(published, config), effective: effectiveImpact(published,config,year.startsAt.toISOString().slice(0,10),year.endsAt.toISOString().slice(0,10)) },
       issues,
       classrooms: countClassrooms(config),
       license,
@@ -956,6 +971,10 @@ export class AppService {
               : null,
             config,
           ),
+          previousPublishedRevisionId: y.publishedRevisionId,
+          newPublishedRevisionId: r.id,
+          affected: configurationImpact(y.publishedRevisionId ? await readConfig(tx,y.publishedRevisionId) : null,config),
+          effective: effectiveImpact(y.publishedRevisionId ? await readConfig(tx,y.publishedRevisionId) : null,config,y.startsAt.toISOString().slice(0,10),y.endsAt.toISOString().slice(0,10)),
           revision: r.sequence,
           classrooms: countClassrooms(config),
           warnings: issues.length,
@@ -964,6 +983,18 @@ export class AppService {
       },
       { timeout: 60000 },
     );
+  }
+  async publishedOutput(a: Actor, yearId: string, query: unknown) {
+    const input=z.object({start:z.string().refine(validDate).optional(),end:z.string().refine(validDate).optional(),classroomId:z.string().uuid().optional()}).parse(query);
+    const year=await this.year(a,yearId);
+    if(!year.publishedRevisionId) throw new NotFoundException("No active published configuration");
+    const school=await this.institution(a,year.institutionId);
+    const config=await readConfig(db,year.publishedRevisionId);
+    const start=input.start||year.startsAt.toISOString().slice(0,10);
+    const end=input.end||new Date(Math.min(Date.parse(start)+30*86400000,year.endsAt.getTime())).toISOString().slice(0,10);
+    if(start>end || start<year.startsAt.toISOString().slice(0,10) || end>year.endsAt.toISOString().slice(0,10) || Date.parse(end)-Date.parse(start)>30*86400000) throw new BadRequestException("Request up to 31 inclusive dates within the academic year");
+    if(input.classroomId && !config.boards.some(b=>b.grades.some(g=>g.classrooms.some(c=>c.id===input.classroomId)))) throw new NotFoundException("Published classroom unavailable");
+    return publishedOutput(config,{organizationId:school.organizationId,schoolId:school.id,academicYearId:year.id,publishedRevisionId:year.publishedRevisionId,academicYearStart:year.startsAt.toISOString().slice(0,10),academicYearEnd:year.endsAt.toISOString().slice(0,10)},start,end,input.classroomId);
   }
   async history(a: Actor, yearId: string) {
     await this.year(a, yearId);
@@ -1048,9 +1079,12 @@ export class AppService {
       if (r.status !== "PENDING")
         throw new ConflictException("Request already resolved");
       if (data.approve) {
+        await lockOrganization(tx, r.organizationId);
+        await tx.$queryRaw`SELECT id FROM "Institution" WHERE id=${r.institutionId} FOR UPDATE`;
         const current = await tx.institution.findUniqueOrThrow({
           where: { id: r.institutionId },
         });
+        if (current.organizationId !== r.organizationId || current.deletionDueAt) throw new BadRequestException("School unavailable for approval");
         const proposed = institutionSchema.parse({
           ...current,
           ...(r.proposed as object),
@@ -1068,6 +1102,17 @@ export class AppService {
           where: { id: current.id },
           data: proposed,
         });
+        const years = await tx.academicYear.findMany({ where: { institutionId: current.id, draftRevisionId: { not: null } }, orderBy: { id: "asc" } });
+        for (const year of years) {
+          await tx.$queryRaw`SELECT id FROM "AcademicYear" WHERE id=${year.id} FOR UPDATE`;
+          const draft = await readConfig(tx, year.draftRevisionId!);
+          const missing = proposed.boards.filter((name) => !draft.boards.some((board) => board.name === name));
+          if (missing.length) {
+            draft.boards.push(...(draft.resolverVersion === 2 ? adoptScheduling(emptyConfig(missing, randomUUID),randomUUID) : emptyConfig(missing, randomUUID)).boards);
+            await writeConfig(tx, year.draftRevisionId!, draft);
+            await tx.revision.update({ where: { id: year.draftRevisionId! }, data: { lock: { increment: 1 } } });
+          }
+        }
       }
       const result = await tx.changeRequest.update({
         where: { id },
@@ -1079,7 +1124,7 @@ export class AppService {
       });
       await audit(tx, a, "request.resolved", id, { status: result.status });
       return result;
-    });
+    }, { timeout: 30000 });
   }
   async audits(a: Actor) {
     this.admin(a);

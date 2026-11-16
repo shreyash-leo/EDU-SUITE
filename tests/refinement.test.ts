@@ -67,7 +67,7 @@ describe("Full holidays and deliberate reopening", () => {
     const { config, a, b, room } = setup();
     a.events.push({ id: id(), name: "Holiday", kind: "holiday", target: { scope: "school", ids: [] }, rule: rule() });
     b.events.push({ id: id(), name: "Half-day", kind: "half-day", target: { scope: "classroom", ids: [room(b)] }, rule: rule({ type: "date", date: "2026-11-14" }) });
-    expect(resolve(b, room(b), "2026-11-14", config)).toEqual({ status: "holiday", reason: "Holiday" });
+    expect(resolve(b, room(b), "2026-11-14", config)).toMatchObject({ status: "holiday", reason: "Holiday" });
   });
   it("does not silently reopen full holidays with a normal working exception", () => {
     const { config, a, b, room } = setup();
@@ -139,9 +139,11 @@ describe("Academic hierarchy, copying and calendar totals", () => {
 });
 
 describe("Working-week and exceptional half-day calculations", () => {
-  it("opens a normal weekly closure with an explicit recurring half-day schedule", () => {
+  it("requires a calendar exception before a half-day schedule opens a weekly closure", () => {
     const { config, a, b, room } = setup(); b.nonWorkingDays = [0, 6];
     a.schedules.push(schedule({ scope: "school", ids: [] }, { name: "Second Saturday half-day", dayType: "half", rule: rule({ type: "recurring", weekdays: [6], nth: 2 }) }));
+    expect(resolve(b, room(b), "2026-11-14", config).status).toBe("non-working");
+    b.events.push({ id: id(), name: "Second Saturday half-day", kind: "half-day", target: { scope: "school", ids: [] }, rule: rule({ type: "recurring", weekdays: [6], nth: 2 }) });
     expect(resolve(b, room(b), "2026-11-14", config)).toMatchObject({ status: "working", schedule: { dayType: "half" } });
     expect(resolve(b, room(b), "2026-11-21", config).status).toBe("non-working");
   });
@@ -167,4 +169,49 @@ describe("Calendar day labels", () => {
     a.schedules.push(schedule({ scope: "school", ids: [] }, { dayType: "half", rule: rule({ type: "date", date: "2026-11-16" }) }));
     expect(calendarDay(b, selectedClassrooms(b, {}), "2026-11-16", config)).toMatchObject({ status: "half-day", results: [{ status: "half-day", schedule: { dayType: "half" } }] });
   });
+});
+
+
+describe("Final refinement calendar classifications", () => {
+  it("separates provisional dates from validated instruction", () => {
+    const { config, a } = setup(); a.schedules = [];
+    const summary = calendarSummary(config, "2026-11-16", "2026-11-16");
+    expect(summary.workingDays).toBe(1); expect(summary.validatedWorkingDays).toBe(0);
+    expect(summary.provisionalWorkingDays).toBe(1); expect(summary.fullWorkingDays).toBe(0);
+  });
+  it("detects mixed half-days even with equal working totals", () => {
+    const { config, a, b, room } = setup();
+    b.schedules.push(schedule({ scope: "board", ids: [] }, { dayType: "half" }));
+    const summary = calendarSummary(config, "2026-11-16", "2026-11-16");
+    expect(summary.mixed).toBe(true); expect(summary.workingDays).toBeNull();
+    expect(summary.rows.map(r => r.workingDays)).toEqual([1, 1, 1]);
+  });
+  it("reports incomplete half-day schedules explicitly", () => {
+    const { config, a, room } = setup(); a.schedules = [];
+    a.events.push({ id: id(), name: "Half", kind: "half-day", target: { scope: "board", ids: [] }, rule: rule() });
+    expect(resolve(a, room(a), "2026-11-16", config)).toMatchObject({ status: "missing", reason: expect.stringContaining("half-day") });
+  });
+});
+
+
+describe("Effective classification comparison",()=>{
+ it("ignores holiday descriptions when the effective dates are identical",()=>{
+  const {config}=setup();
+  for(const b of config.boards)b.events.push({id:id(),name:`Different holiday description ${b.name}`,kind:"holiday",target:{scope:"board",ids:[]},rule:rule({type:"date",date:"2026-11-16"})});
+  const summary=calendarSummary(config,"2026-11-16","2026-11-16");
+  expect(summary.mixed).toBe(false);expect(summary.holidays).toBe(1);
+ });
+ it("detects different half-day dates even when both annual totals match",()=>{
+  const {config,a,b}=setup();
+  a.schedules.push(schedule({scope:"board",ids:[]},{dayType:"half",rule:rule({type:"date",date:"2026-11-16"})}));
+  b.schedules.push(schedule({scope:"board",ids:[]},{dayType:"half",rule:rule({type:"date",date:"2026-11-17"})}));
+  const summary=calendarSummary({boards:[a,b]},"2026-11-16","2026-11-17");
+  expect(summary.rows.map(r=>r.halfDays)).toEqual([1,1]);expect(summary.mixed).toBe(true);
+ });
+});
+
+it("a higher-priority full working exception supersedes a half-day expectation even without a schedule",()=>{
+ const {config,a,room}=setup();a.schedules=[];
+ a.events.push({id:id(),name:"Weekly half",kind:"half-day",target:{scope:"board",ids:[]},rule:rule({type:"weekly",weekdays:[1]})},{id:id(),name:"Specific full day",kind:"working",target:{scope:"board",ids:[]},rule:rule({type:"date",date:"2026-11-16"})});
+ expect(resolve(a,room(a),"2026-11-16",config)).toMatchObject({status:"missing",expectedDayType:"full"});
 });

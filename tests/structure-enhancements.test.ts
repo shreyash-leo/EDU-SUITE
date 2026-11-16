@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { randomUUID as id } from "node:crypto";
-import { emptyConfig, recurrenceDates, ruleSchema, copyYear, removeFromConfig, type Rule } from "../packages/domain/src";
+import { emptyConfig, recurrenceDates, ruleSchema, copyYear, removeFromConfig, removeClassroomsFromConfig, type Rule } from "../packages/domain/src";
 import { academicPresetSchema, defaultAcademicPresets, presetsForBoard, applyAcademicPreset, presetSelectionSchema } from "../packages/domain/src/presets";
 import { assignGrades, assertStableOwnership, configurationImpact } from "../packages/domain/src/impact";
 import { calendarSummary, platformSettingsSchema } from "../packages/domain/src/enhancements";
@@ -22,6 +22,19 @@ describe("Configurable academic presets", () => {
   it("rejects missing boards and unknown sections atomically", () => { const c = fixture(), original = structuredClone(c); expect(() => applyAcademicPreset(c, id(), selection, id)).toThrow(/board/); expect(() => applyAcademicPreset(c, c.boards[0].id, { ...selection, sections: [] }, id)).toThrow(/section/); expect(c).toEqual(original); });
 });
 describe("Assignments, dependencies and stable IDs", () => {
+  it("removes selected classrooms together and prunes only their target references", () => {
+    const c = fixture(), [board, other] = c.boards, grade = board.grades[0];
+    const first = grade.classrooms[0].id, second = id(), kept = id();
+    grade.classrooms.push({ id: second, name: "1B", active: true }, { id: kept, name: "1C", active: true });
+    board.events.push({ id: id(), name: "Selected rooms", kind: "holiday", target: { scope: "classrooms", ids: [first, second, kept] }, rule: { type: "default", weekdays: [], intervalWeeks: 1 } });
+    const original = structuredClone(c);
+    const next = removeClassroomsFromConfig(c, board.id, [first, second]);
+    expect(next.boards[0].grades[0].classrooms.map((room) => room.id)).toEqual([kept]);
+    expect(next.boards[0].events[0].target.ids).toEqual([kept]);
+    expect(next.boards[1]).toEqual(other);
+    expect(c).toEqual(original);
+    expect(() => removeClassroomsFromConfig(c, board.id, [other.grades[0].classrooms[0].id])).toThrow(/no longer belongs/);
+  });
   it("assigns and unassigns while preserving classrooms", () => { const b = fixture().boards[0], next = assignGrades(b, [b.grades[0].id], null); expect(next.grades[0].sectionId).toBe(null); expect(next.grades[0].classrooms).toEqual(b.grades[0].classrooms); expect(b.grades[0].sectionId).not.toBe(null); });
   it("rejects foreign grades and sections", () => { const c = fixture(), [a,b] = c.boards; expect(() => assignGrades(a, [b.grades[0].id], null)).toThrow(/belong/); expect(() => assignGrades(a, [a.grades[0].id], b.sections[0].id)).toThrow(/section/); });
   it("includes dependent classrooms in grade deletion impact", () => { const c = fixture(), a = c.boards[0], next = removeFromConfig(c, a.id, "grade", a.grades[0].id), impact = configurationImpact(c, next); expect(impact.grades[0].id).toBe(a.grades[0].id); expect(impact.classrooms[0].id).toBe(a.grades[0].classrooms[0].id); expect(impact.removed).toBe(2); expect(next.boards[1]).toEqual(c.boards[1]); });

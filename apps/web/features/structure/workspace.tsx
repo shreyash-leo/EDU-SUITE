@@ -1,10 +1,16 @@
 "use client";
+import {WorkspaceSkeleton} from "../../components/platform-primitives";
+import { adoptScheduling, holidayPart, schedulingIssues } from "../../../../packages/domain/src/scheduling";
+import { EffectiveChangePreview } from "./effective-change-preview";
+import { EffectiveRulePreview } from "./effective-rule-preview";
+import { classroomCounts } from "../../../../packages/domain/src/refinement";
 import { PresetPreview } from "./preset-preview";
 import { operationalYear } from "../../../../packages/domain/src/portal";
 import { ImpactPreview } from "./impact-preview";
 import { configurationImpact, type ConfigurationImpact } from "../../../../packages/domain/src/impact";
 import { RecurrencePreview } from "./recurrence-preview";
 import { ScopeRule, defaultRule } from "./scope-rule";
+import { ReviewCalendar } from "./review-calendar";
 import { ScheduleWizard } from "./schedule-wizard";
 import { BulkGrades, ClassroomBuilder } from "./bulk-builders";
 import { SectionAssignments } from "./section-assignments";
@@ -73,6 +79,7 @@ import {
   autoAssign,
   removeFromBoard,
   removeFromConfig,
+  removeClassroomsFromConfig,
   applicableRules,
   countClassrooms,
   licensedUsage,
@@ -111,6 +118,7 @@ import {
 export function Structure({
   institution: i,
   workspaceSection = "Structure Management",
+  initialRevision, initialYear, onRevisionSelected,
   initialIntent = "default",
   onOpenStructure,
   onBack,
@@ -118,6 +126,7 @@ export function Structure({
 }: {
   institution: RecordData;
   workspaceSection?: string;
+  initialRevision?: string; initialYear?: string; onRevisionSelected?: (revision: string | undefined, year: string) => void;
   initialIntent?: "default" | "review" | "calendar" | "grades" | "edit" | "bell" | "history";
   onOpenStructure?: () => void;
   onBack: () => void;
@@ -178,12 +187,15 @@ export function Structure({
     setYears(ys);
     return ys;
   }, [i.id]);
+  const loadGeneration = useRef(0);
   const load = useCallback(async (id: string, revisionId?: string) => {
+    const generation = ++loadGeneration.current;
     const r = await api(
       `/years/${id}/config${revisionId ? "?revisionId=" + revisionId : ""}`,
     );
+    if (generation !== loadGeneration.current || yearRef.current && yearRef.current !== id) return;
     const missingBoards = r.revision.status === "DRAFT" ? i.boards.filter((name: string) => !r.config.boards.some((b: Board) => b.name === name)) : [];
-    const loadedConfig = missingBoards.length ? { ...r.config, boards: [...r.config.boards, ...emptyConfig(missingBoards, uid).boards] } : r.config;
+    const loadedConfig = missingBoards.length ? { ...r.config, boards: [...r.config.boards, ...(r.config.resolverVersion===2?adoptScheduling(emptyConfig(missingBoards,uid),uid):emptyConfig(missingBoards,uid)).boards] } : r.config;
     setRecord(r);
     setLicense(r.license);
     setConfig(loadedConfig);
@@ -203,14 +215,15 @@ export function Structure({
   useEffect(() => {
     void loadYears()
       .then((ys) => {
-        if (ys.length) { const saved = sessionStorage.getItem(`plan-year-${i.id}`); setYearId(operationalYear(ys, saved || undefined)?.id || ys[0].id); }
+        if (ys.length) { const saved = initialYear || sessionStorage.getItem(`plan-year-${i.id}`); setYearId(operationalYear(ys, saved || undefined)?.id || ys[0].id); }
       })
       .catch((e) => setError(e.message));
   }, [loadYears]);
   useEffect(() => {
     setRecord(null);
-    if (yearId) { sessionStorage.setItem(`plan-year-${i.id}`, yearId); void load(yearId).catch((e) => setError(e.message)); }
-  }, [yearId, load]);
+    if (yearId) { sessionStorage.setItem(`plan-year-${i.id}`, yearId); void load(yearId, (!initialYear || initialYear === yearId) ? initialRevision : undefined).catch((e) => setError(e.message)); }
+  }, [yearId, load, initialRevision, initialYear]);
+  useEffect(() => { if (initialYear && years.some(y=>y.id===initialYear)) setYearId(initialYear); }, [initialYear, years]);
   const persist = useCallback(async () => {
     if (flight.current) await flight.current;
     if (savedSeq.current === changeSeq.current) return;
@@ -272,7 +285,8 @@ export function Structure({
   }, [initialIntent, record, yearId, load]);
   const historyIntentHandled = useRef(false);
   useEffect(() => {
-    if (initialIntent !== "history" || !record || historyIntentHandled.current) return;
+    if (initialIntent !== "history") { historyIntentHandled.current = false; return; }
+    if (!record || historyIntentHandled.current) return;
     historyIntentHandled.current = true;
     void act(async () => {
       setHistory(await api(`/years/${yearId}/history`));
@@ -363,6 +377,7 @@ export function Structure({
         <ArrowLeft size={14} /> Back to Structure Management Dashboard
       </button>
       <PageHead
+        tone="teal"
         eyebrow="SCHOOL WORKSPACE"
         title={i.name}
         text="Build the academic foundation, one clear decision at a time."
@@ -393,7 +408,7 @@ export function Structure({
             value={yearId}
             onChange={(e) => {
               const id = e.target.value;
-              void navigate(() => setYearId(id));
+              void navigate(() => { onRevisionSelected?.(undefined,id); setYearId(id); });
             }}
           >
             <option value="">Select academic year</option>
@@ -408,7 +423,7 @@ export function Structure({
               value={
                 editable
                   ? record.published
-                    ? "DRAFT_CHANGES_PENDING"
+                    ? configurationChanges(record.published,config).length ? "DRAFT_CHANGES_PENDING" : "EDITING_DRAFT_NO_CHANGES"
                     : "DRAFT"
                   : record.revision.status
               }
@@ -453,6 +468,7 @@ export function Structure({
                   void act(async () => {
                     if (!record.year.draftRevisionId)
                       await api(`/years/${yearId}/draft`, "POST", {});
+                    onRevisionSelected?.(undefined,yearId);
                     await load(yearId);
                   })
                 }
@@ -470,7 +486,7 @@ export function Structure({
         <div className="notice error" role="alert">
           <AlertCircle size={17} />
           {error}
-          <button className="icon-button" onClick={() => setError("")}>
+          <button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}>
             <X size={14} />
           </button>
         </div>
@@ -486,10 +502,7 @@ export function Structure({
           }
         />
       ) : !record ? (
-        <div className="loading inline">
-          <Loader2 className="spin" />
-          Loading academic structure…
-        </div>
+        <WorkspaceSkeleton label="Loading academic structure" rows={6}/>
       ) : (
         <>
           {yearView && <>
@@ -497,7 +510,7 @@ export function Structure({
             <DataTable data={years} columns={[
               { accessorKey: "label", header: "Academic year" }, { accessorKey: "startsAt", header: "Starts", cell: (c) => dateLabel(c.getValue()) }, { accessorKey: "endsAt", header: "Ends", cell: (c) => dateLabel(c.getValue()) },
               { id: "status", header: "Configuration", accessorFn: (y) => y.draftRevisionId ? y.publishedRevisionId ? "Draft changes pending" : "Draft" : "Published" },
-              { id: "open", header: "Action", cell: (c) => <Button onClick={() => void navigate(() => { setYearId(c.row.original.id); setYearView(false); onOpenStructure?.(); })}>Open year</Button> },
+              { id: "open", header: "Action", cell: (c) => <Button onClick={() => void navigate(() => { onRevisionSelected?.(undefined,c.row.original.id); setYearId(c.row.original.id); setYearView(false); onOpenStructure?.(); })}>Open year</Button> },
             ]} />
           </>}
           {!yearView && workspaceSection === "Review & History" && <>
@@ -508,7 +521,13 @@ export function Structure({
             <ChangeReview changes={configurationChanges(record.published, config)} before={record.published} after={config} />
           </>}
           <div hidden={yearView || workspaceSection !== "Structure Management"}>
-          <div className="tabs structure-tabs">
+            {tab === "Classroom Setup" && <div className="summary-strip">{Object.entries(classroomCounts(config)).map(([key,value])=><span key={key}>{({total:"Total Classrooms",activeFlags:"Active Classroom Flags",operationallyActive:"Operationally Active Classrooms",inactive:"Inactive Classrooms",licensed:"Licensed Classrooms"} as Record<string,string>)[key]}: <strong>{value}</strong></span>)}<span>Remaining Organization Allowance: <strong>{Math.max(0,license.limit-displayedUsage)}</strong></span></div>}
+          <div className="structure-progress" aria-label="Configuration overview">
+            <span><strong>{record.year.label}</strong> · {record.revision.status === "DRAFT" ? "Working draft" : "Published version"}</span>
+            <span>{config.boards.length} boards · {config.boards.reduce((n,b)=>n+b.sections.length,0)} sections · {countClassrooms(config)} classrooms</span>
+            <span>{editable ? "Changes save automatically. Review before publishing." : "Create a draft to edit this version."}</span>
+          </div>
+          <div className="tabs structure-tabs" aria-label="Structure configuration steps">
             {[
               "School Registration",
               "Academic Sections",
@@ -517,11 +536,12 @@ export function Structure({
             ].map((t, n) => (
               <button
                 key={t}
+                aria-current={tab === t ? "page" : undefined}
                 className={tab === t ? "active" : ""}
                 onClick={() => void navigate(() => { setTab(t); sessionStorage.setItem(`plan-structure-tab-${i.id}`, t); })}
               >
                 <span>{String(n + 1).padStart(2, "0")}</span>
-                {t}
+                <span className="structure-step-text">{t}<small>{t==="School Registration"?`${config.boards.reduce((n,b)=>n+b.grades.length,0)} grades offered`:t==="Academic Sections"?`${config.boards.flatMap(b=>b.grades).filter(g=>!g.sectionId).length} grades unassigned`:t==="Classroom Setup"?`${countClassrooms(config)} classrooms · ${Math.max(0,license.limit-displayedUsage)} allowance remaining`:`${config.boards.reduce((n,b)=>n+b.schedules.filter(s=>!s.templateOnly).length,0)} schedules · ${config.boards.reduce((n,b)=>n+b.events.length,0)} calendar rules`}</small></span>
               </button>
             ))}
           </div>
@@ -555,7 +575,7 @@ export function Structure({
                   <div>
                     <h2>School registration</h2>
                     <p>
-                      Registered identity is maintained by your Super Admin.
+                      School identity and affiliations are maintained by your Super Admin. Add the grades offered by each board below.
                     </p>
                   </div>
                   <Button onClick={() => setModal({ type: "changeRequest" })}>
@@ -718,10 +738,10 @@ export function Structure({
               )}
             </>
           )}
-          {tab === "Academic Sections" && board && <SectionAssignments config={config} board={board} editable={!!editable} onChange={updateBoard} onEdit={(section) => setModal({ type: "section", record: section })} onDelete={(section) => setModal({ type: "delete", kind: "section", record: section })} />}
+          {tab === "Academic Sections" && board && <SectionAssignments yearId={yearId} lock={lockRef.current} revisionId={revisionRef.current} config={config} board={board} editable={!!editable} onChange={updateBoard} onEdit={(section) => setModal({ type: "section", record: section })} onDelete={(section) => setModal({ type: "delete", kind: "section", record: section })} />}
           {tab === "Classroom Setup" && board && (
             <>
-              <div className="classroom-filters"><label>Academic section<select value={classSection} onChange={(e) => { setClassSection(e.target.value); setClassGrade(""); }}><option value="">All sections</option><option value="unassigned">Unassigned grades</option>{board.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label><label>Grade<select value={classGrade} onChange={(e) => setClassGrade(e.target.value)}><option value="">All grades</option>{board.grades.filter((g) => !classSection || (classSection === "unassigned" ? !g.sectionId : g.sectionId === classSection)).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select></label><div className="classroom-counts"><span><strong>{classroomRows.length}</strong> classrooms</span><span><strong>{classroomRows.filter((c) => c.active).length}</strong> active</span><span><strong>{classroomRows.filter((c) => !c.active).length}</strong> inactive</span></div></div>
+              <div className="classroom-filters"><label>Academic section<select value={classSection} onChange={(e) => { setClassSection(e.target.value); setClassGrade(""); }}><option value="">All sections</option><option value="unassigned">Unassigned grades</option>{board.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label><label>Grade<select value={classGrade} onChange={(e) => setClassGrade(e.target.value)}><option value="">All grades</option>{board.grades.filter((g) => !classSection || (classSection === "unassigned" ? !g.sectionId : g.sectionId === classSection)).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</select></label><div className="classroom-counts"><span><strong>{classroomRows.length}</strong> classrooms</span><span><strong>{classroomRows.filter((c) => c.active).length}</strong> Active Classroom Flags</span><span><strong>{classroomRows.filter((c) => !c.active).length}</strong> Inactive Classrooms</span></div></div>
               <div className="license-banner">
                 <div>
                   <span className="license-icon">
@@ -786,6 +806,7 @@ export function Structure({
                                 ? "Classroom name already exists"
                                 : undefined,
                         },
+                        { key:"capacity", label:"Student capacity", type:"number", parse:v=>v.trim()?Number(v):null, validate:v=>!v.trim() || Number.isInteger(Number(v)) && Number(v)>0 && Number(v)<=10000 ? undefined : "Use a whole number from 1 to 10,000" },
                         {
                           key: "active",
                           label: "Classroom status",
@@ -835,11 +856,16 @@ export function Structure({
                               })),
                             }),
                         },
+                        {
+                          label: "Delete classrooms",
+                          action: (rows) => setModal({ type: "deleteClassrooms", records: rows, boardId: board.id }),
+                        },
                       ]
                     : []
                 }
                 data={classroomRows}
                 columns={[
+                  {accessorKey:"capacity",header:"Student capacity",cell:c=>c.getValue() ?? "Not set"},
                   {
                     accessorKey: "name",
                     header: "Classroom",
@@ -902,7 +928,7 @@ export function Structure({
                 }
               />
               <p className="table-help">
-                Bulk action toggles selected classroom statuses. Deletions
+                Select classrooms to change their status or delete them together. Deletions
                 reduce the current year reservation after publication; other years may still determine usage.
               </p>
               <div className="summary-strip">
@@ -932,17 +958,20 @@ export function Structure({
               config={config}
               editable={!!editable}
               onChange={updateBoard}
-              onEdit={(type, record) => setModal({ type, ...(record?.suggestedRule ? { suggestedRule: record.suggestedRule, suggestedAction: record.suggestedAction, suggestedDayType: record.suggestedDayType } : { record }) })}
+              onAdopt={() => void act(async () => { await commitConfiguration(adoptScheduling(latest.current)); notify("Three-part scheduling enabled in this draft. Review holiday families before publishing."); })}
+              onReview={() => void act(async () => { await ensureSaved(); const result = await api(`/years/${yearId}/review`); setIssues(result.issues); setReviewImpact(result.impact); setModal({type:"review"}); })}
+              onEdit={(type, record) => setModal({ type, ...(record?.suggestedRule ? { suggestedRule: record.suggestedRule, suggestedAction: record.suggestedAction, suggestedDayType: record.suggestedDayType, configurationPart: record.configurationPart } : { record }) })}
               onDelete={(kind, record) =>
                 setModal({ type: "delete", kind, record })
               }
               year={record.year}
             />
           )}
+          <footer className="structure-step-footer"><span>{editable ? saveState === "Saved" ? "Draft changes saved" : saveState : "Published version · Read only"}</span>{tab!=="School Registration" && <Button onClick={()=>void navigate(async()=>{await ensureSaved();const previous=tab==="Academic Sections"?"School Registration":tab==="Classroom Setup"?"Academic Sections":"Classroom Setup";setTab(previous);sessionStorage.setItem(`plan-structure-tab-${i.id}`,previous);})}>Previous step</Button>}{tab!=="Bell Time & Calendar" && <Button variant="dark" disabled={busy || !record} onClick={()=>void navigate(async()=>{await ensureSaved();const next=tab==="School Registration"?"Academic Sections":tab==="Academic Sections"?"Classroom Setup":"Bell Time & Calendar";setTab(next);sessionStorage.setItem(`plan-structure-tab-${i.id}`,next);})}>{editable ? "Save & continue" : "Continue"}</Button>}</footer>
           {editable && record.published && (
             <div className="discard">
               <button onClick={() => setModal({ type: "discard" })}>
-                Discard draft changes
+                Discard Working Draft
               </button>
               <span>The current published version will be preserved.</span>
             </div>
@@ -952,7 +981,7 @@ export function Structure({
       )}
       {modal && (
         <Modal
-          page={!["delete", "discard", "grade", "section", "classroom", "newClassroom"].includes(modal.type)}
+          page={!["delete", "deleteClassrooms", "discard", "grade", "section", "classroom", "newClassroom"].includes(modal.type)}
           title={
             modal.type === "academicPreset" ? "Suggested board structure" : modal.type === "bulkGrades" ? "Add multiple grades" : modal.type === "newClassroom" ? "Add classroom" : modal.type === "year"
               ? "Create academic year"
@@ -960,6 +989,8 @@ export function Structure({
                 ? "Review your configuration"
                 : modal.type === "history"
                   ? "Published version history"
+                  : modal.type === "deleteClassrooms"
+                    ? "Delete classrooms"
                   : modal.type === "delete"
                     ? `Delete ${modal.kind}`
                     : modal.type === "schedule"
@@ -983,7 +1014,7 @@ export function Structure({
             <AcademicYearForm years={years} onSubmit={async (v) => {
               await ensureSaved();
               const r = await api(`/institutions/${i.id}/years`, "POST", v);
-              await loadYears(); setYearId(r.id); setModal(null);
+              await loadYears(); onRevisionSelected?.(undefined,r.id); setYearId(r.id); setModal(null);
               notify("Academic year created. Review calendar dates and recurring rules before activation.");
             }} />
           )}
@@ -1069,6 +1100,7 @@ export function Structure({
               onCancel={close}
               fields={[
                 { key: "name", label: "Classroom name", required: true },
+                { key: "capacity", label: "Student capacity (optional)", type:"number" },
                 {
                   key: "active",
                   label: "Status",
@@ -1080,6 +1112,7 @@ export function Structure({
               ]}
               initial={{ ...modal.record, active: String(modal.record.active) }}
               onSubmit={async (v) => {
+                if (v.capacity !== "" && v.capacity !== undefined && v.capacity !== null && (!Number.isInteger(Number(v.capacity)) || Number(v.capacity)<1 || Number(v.capacity)>10000)) throw Error("Student capacity must be a whole number from 1 to 10,000");
                 if (
                   board.grades.some((g) =>
                     g.classrooms.some(
@@ -1101,6 +1134,7 @@ export function Structure({
                         ? {
                             ...c,
                             name: v.name.trim(),
+                            capacity: v.capacity === "" || v.capacity === undefined || v.capacity === null ? null : Number(v.capacity),
                             active: v.active === "true",
                           }
                         : c,
@@ -1116,10 +1150,26 @@ export function Structure({
             await commitBoard({ ...board, grades: [...board.grades, ...names.map((name) => ({ id: uid(), name, active, sectionId: null, classrooms: [] }))] });
             notify(`${names.length} grades created in ${board.name}${skipped ? `; ${skipped} duplicates skipped` : ""}.`); setModal(null);
           }} />}
-          {["classrooms", "newClassroom"].includes(modal.type) && board && <ClassroomBuilder board={board} initialGrade={classGrade || undefined} single={modal.type === "newClassroom"} available={availableClassrooms} onCancel={close} onSave={async (rows, active) => {
-            await commitBoard({ ...board, grades: board.grades.map((g) => ({ ...g, classrooms: [...g.classrooms, ...rows.filter((r) => r.gradeId === g.id).map((r) => ({ id: uid(), name: r.name, active }))] })) });
+          {["classrooms", "newClassroom"].includes(modal.type) && board && <ClassroomBuilder board={board} initialGrade={classGrade || undefined} single={modal.type === "newClassroom"} available={availableClassrooms} onCancel={close} onSave={async (rows, active, capacity) => {
+            await commitBoard({ ...board, grades: board.grades.map((g) => ({ ...g, classrooms: [...g.classrooms, ...rows.filter((r) => r.gradeId === g.id).map((r) => ({ id: uid(), name: r.name, active, capacity }))] })) });
             notify(`${rows.length} classroom${rows.length === 1 ? "" : "s"} created.`); setModal(null);
           }} />}
+          {modal.type === "deleteClassrooms" && (() => {
+            const ids = (modal.records as RecordData[]).map((room) => room.id as string);
+            const proposed = removeClassroomsFromConfig(config, modal.boardId, ids);
+            return <>
+              <div className="notice error"><AlertCircle size={18} /> Delete {ids.length} selected classroom{ids.length === 1 ? "" : "s"} from this working draft?</div>
+              <ul>{(modal.records as RecordData[]).map((room) => <li key={room.id}>{room.name} · {room.gradeName}</li>)}</ul>
+              <p>Related target references will be removed from the draft. Published historical versions are preserved.</p>
+              <ImpactPreview impact={configurationImpact(config, proposed)} title="Deletion impact" />
+              <EffectiveChangePreview yearId={yearId} lock={lockRef.current} revisionId={revisionRef.current} config={proposed} />
+              <div className="form-footer"><Button onClick={close}>Cancel</Button><Button variant="danger" onClick={() => {
+                change(removeClassroomsFromConfig(latest.current, modal.boardId, ids));
+                close();
+                notify(`${ids.length} classroom${ids.length === 1 ? "" : "s"} removed from the working draft.`);
+              }}>Delete {ids.length} classroom{ids.length === 1 ? "" : "s"}</Button></div>
+            </>;
+          })()}
           {modal.type === "delete" && (
             <>
               <div className="notice error">
@@ -1134,7 +1184,10 @@ export function Structure({
                     : "Related target references will be removed from the draft."}{" "}
                 Published historical versions are preserved.
               </p>
+              {modal.kind === "event" && config.boards.some(b=>b.events.some(e=>e.parentId===modal.record.id)) && <div className="notice amber-notice">This rule has linked overrides. Deleting it leaves those drafts unresolved and blocks publication until you relink or remove them.</div>}
+              {modal.kind === "schedule" && config.boards.some(b=>b.events.some(e=>e.scheduleId===modal.record.id)) && <div className="notice amber-notice">Advanced rules use this template. Select another template in those rules before publishing.</div>}
               {board && <ImpactPreview impact={configurationImpact(config, removeFromConfig(config, (config.boards.find((b) => modal.kind === "schedule" ? b.schedules.some((s) => s.id === modal.record.id) : modal.kind === "event" ? b.events.some((e) => e.id === modal.record.id) : b.id === board.id) || board).id, modal.kind, modal.record.id))} title="Deletion impact" />}
+              {board && <EffectiveChangePreview yearId={yearId} lock={lockRef.current} revisionId={revisionRef.current} config={removeFromConfig(config, (config.boards.find((b) => modal.kind === "schedule" ? b.schedules.some((s) => s.id === modal.record.id) : modal.kind === "event" ? b.events.some((e) => e.id === modal.record.id) : b.id === board.id) || board).id, modal.kind, modal.record.id)} />}
               <Form
               onCancel={close}
                 fields={[
@@ -1170,12 +1223,14 @@ export function Structure({
                   })
                 }
               >
-                Discard draft
+                Discard Working Draft
               </Button>
             </>
           )}
           {modal.type === "schedule" && board && (
             <ScheduleWizard
+              resolverVersion={config.resolverVersion}
+              templates={config.boards.flatMap(b=>b.schedules)}
               boards={config.boards}
               board={board}
               ruleType={modal.suggestedRule}
@@ -1191,14 +1246,19 @@ export function Structure({
           )}
           {modal.type === "event" && board && (
             <EventEditor
+              yearStart={String(record?.year.startsAt).slice(0,10)} yearEnd={String(record?.year.endsAt).slice(0,10)}
               yearId={yearId}
-              kind={modal.suggestedAction}
+              onCancel={close}
+              configurationPart={modal.configurationPart}
+              resolverVersion={config.resolverVersion}
+              operation={modal.suggestedAction === "schedule" ? "timing" : undefined}
+              kind={modal.suggestedAction === "schedule" ? "working" : modal.suggestedAction}
               ruleType={modal.suggestedRule}
               boards={config.boards}
               board={board}
               initial={modal.record}
-              onSave={async (ev) => {
-                await commitConfiguration({ ...config, boards: config.boards.map((b) => ({ ...b, events: b.id === board.id ? [...b.events.filter((x) => x.id !== ev.id), ev] : b.events.filter((x) => x.id !== ev.id) })) });
+              onSave={async (ev, schedule) => {
+                await commitConfiguration({ ...config, boards: config.boards.map((b) => ({ ...b, schedules: schedule && b.id === board.id ? [...b.schedules.filter(s=>s.id!==schedule.id),schedule] : b.schedules, events: b.id === board.id ? [...b.events.filter((x) => x.id !== ev.id), ev] : b.events.filter((x) => x.id !== ev.id) })) });
                 notify("Calendar rule saved to the working draft."); setModal(null);
               }}
             />
@@ -1244,6 +1304,8 @@ export function Structure({
                   <span>Classrooms</span>
                 </strong>
               </div>
+              <ReviewCalendar yearId={yearId} config={config} start={String(record?.year.startsAt).slice(0,10)} end={String(record?.year.endsAt).slice(0,10)} />
+              <div className="row-actions"><Button onClick={()=>{setTab("Bell Time & Calendar");setModal(null);}}>Review bell timing and holidays</Button><Button onClick={()=>{setTab("Academic Sections");setModal(null);}}>Review academic sections</Button></div>
               <div className="issue-list">
                 {issues.map((x, n) => (
                   <div key={n} className={x.severity}>
@@ -1297,9 +1359,9 @@ export function Structure({
                   { accessorKey: "status", header: "Status", cell: (c) => <Badge value={c.getValue()} /> },
                   { accessorKey: "publishedAt", header: "Published", cell: (c) => dateLabel(c.getValue()) },
                   { id: "actions", header: "Actions", cell: (c) => <div className="row-actions">
-                    <Button onClick={() => void act(async () => { await ensureSaved(); await load(yearId, c.row.original.id); setModal(null); onOpenStructure?.(); })}>View</Button>
+                    <Button onClick={() => void act(async () => { await ensureSaved(); onRevisionSelected?.(c.row.original.id,yearId); await load(yearId, c.row.original.id); setModal(null); onOpenStructure?.(); })}>View</Button>
                     <Button disabled={!!record?.year.draftRevisionId} onClick={() => void act(async () => {
-                      await api(`/years/${yearId}/draft`, "POST", { restoreRevisionId: c.row.original.id }); await load(yearId); setModal(null); onOpenStructure?.();
+                      await api(`/years/${yearId}/draft`, "POST", { restoreRevisionId: c.row.original.id }); onRevisionSelected?.(undefined,yearId); await load(yearId); setModal(null); onOpenStructure?.();
                     })}>Restore as draft</Button>
                   </div> },
                 ]} />
@@ -1330,8 +1392,10 @@ export function Structure({
   );
 }
 function EventEditor({
+  yearStart, yearEnd,
   yearId,
-  kind,
+  kind, operation,
+  configurationPart, resolverVersion, onCancel,
   ruleType,
   boards,
   board,
@@ -1342,19 +1406,30 @@ function EventEditor({
   board: Board;
   ruleType?: Rule["type"];
   yearId: string;
+  yearStart?: string; yearEnd?: string;
+  configurationPart?: "default-holidays" | "advanced"; resolverVersion?: 1 | 2; onCancel: () => void;
+  operation?: "timing";
   kind?: Board["events"][number]["kind"];
   initial?: Board["events"][number];
-  onSave: (e: Board["events"][number]) => void | Promise<void>;
+  onSave: (e: Board["events"][number], schedule?: Schedule) => void | Promise<void>;
 }) {
   const [e, setE] = useState<Board["events"][number]>(
     initial || {
       id: uid(),
       name: "",
       kind: kind || "holiday",
+      operation,
+      configurationPart: configurationPart || (kind && kind !== "holiday" ? "advanced" : "default-holidays"),
       target: { scope: "school", ids: [] },
-      rule: ruleType === "recurring" ? { ...defaultRule(), type: "recurring", weekdays: [6], nth: 2 } : { ...defaultRule(), type: "date", date: today() },
+      rule: ruleType === "weekly" ? {...defaultRule(), type:"weekly", weekdays:[0]} : ruleType === "recurring" ? { ...defaultRule(), type: "recurring", weekdays: [6], nth: 2 } : { ...defaultRule(), type: "date", date: today() },
     },
   );
+  const [customSchedule, setCustomSchedule] = useState<Schedule>();
+  const [editingSchedule, setEditingSchedule] = useState(false);
+  const templates = [...(boards || [board]).flatMap(b=>b.schedules), ...(customSchedule ? [customSchedule] : [])];
+  const isHoliday = holidayPart(e) === "default-holidays";
+  const proposedBoards=(boards || [board]).map(b=>({...b,events:b.id===board.id?[...b.events.filter(x=>x.id!==e.id),e]:b.events.filter(x=>x.id!==e.id),schedules:customSchedule && b.id===board.id?[...b.schedules.filter(x=>x.id!==customSchedule.id),customSchedule]:b.schedules}));
+  const relationshipIssues=resolverVersion===2 && e.name.trim()?schedulingIssues({resolverVersion:2,boards:proposedBoards},yearStart || "0001-01-01",yearEnd || "9999-12-31").filter(message=>message.startsWith(e.name+":")):[];
   const baseline = useRef(JSON.stringify(initial || e));
   const current = useRef(e);
   current.current = e;
@@ -1366,7 +1441,9 @@ function EventEditor({
     if (!["school", "board"].includes(result.data.target.scope) && !result.data.target.ids.length)
       throw Error("Choose at least one target");
     if (result.data.overridesHoliday && (result.data.kind !== "working" || result.data.rule.type !== "date")) throw Error("A holiday reopening must be a specific-date working-day exception");
-    await onSave(result.data);
+    for(const date of [result.data.rule.date,result.data.rule.startsOn,result.data.rule.endsOn].filter(Boolean) as string[]) if(yearStart && yearEnd && (date < yearStart || date > yearEnd)) throw Error("Event dates must be within the selected academic year");
+    if (result.data.operation === "timing" && !result.data.scheduleId) throw Error("Select or create a complete bell schedule for this timing rule");
+    await onSave(result.data,customSchedule?.id===result.data.scheduleId?customSchedule:undefined);
     baseline.current = JSON.stringify(current.current);
   };
   useNavigationGuard({
@@ -1384,8 +1461,11 @@ function EventEditor({
       baseline.current = JSON.stringify(current.current);
     },
   });
+  if (editingSchedule) return <ScheduleWizard templateMode yearId={yearId} resolverVersion={resolverVersion} board={board} boards={boards} templates={templates} ruleType="default" dayType={e.kind === "half-day" ? "half" : "full"} onCancel={()=>setEditingSchedule(false)} onSave={schedule=>{setCustomSchedule({...schedule,templateOnly:true});setE({...e,scheduleId:schedule.id});setEditingSchedule(false);}}/>;
   return (
     <>
+      {resolverVersion === 2 && e.overridesHoliday && <div className="notice error">This legacy reopening cannot override Default Holidays. Create a holiday-family override instead.<Button onClick={()=>setE({...e,overridesHoliday:false})}>Remove old reopening authorization</Button></div>}
+      <p className="form-help">{isHoliday ? "Default Holidays · Targeted overrides replace this holiday family only." : "Advanced Scheduling · Choose who, when, what happens and a complete schedule if needed. Default holidays always take priority."}</p>
       <label>
         Event name
         <input
@@ -1393,21 +1473,8 @@ function EventEditor({
           onChange={(x) => setE({ ...e, name: x.target.value })}
         />
       </label>
-      <label>
-        Event type
-        <select
-          value={e.kind}
-          onChange={(x) =>
-            setE({ ...e, kind: x.target.value as typeof e.kind })
-          }
-        >
-          <option value="holiday">Full holiday</option>
-          <option value="working">Working-day exception</option>
-          <option value="half-day">
-            Half day (also configure a matching bell schedule)
-          </option>
-        </select>
-      </label>
+      {e.kind === "holiday" && <div className="row-actions"><Button onClick={()=>setE({...e,rule:{...defaultRule(),type:"recurring",weekdays:[0,1,2,3,4,5,6],startsOn:yearStart || today(),endsOn:yearStart || today()}})}>Use inclusive holiday date range</Button></div>}
+      {resolverVersion===2 && <label>{isHoliday ? "Parent holiday / vacation" : "Override an advanced rule"}<select value={e.parentId || ""} onChange={x=>setE({...e,parentId:x.target.value || undefined})}><option value="">Independent rule</option>{(boards || [board]).flatMap(b=>b.events).filter(p=>p.id!==e.id && holidayPart(p)===holidayPart(e) && !!p.operation===!!e.operation).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><small>Choose a narrower target than the parent. Unrelated holidays remain in effect.</small></label>}
       <ScopeRule
         boards={boards}
         board={board}
@@ -1416,12 +1483,32 @@ function EventEditor({
         onTarget={(target) => setE({ ...e, target })}
         onRule={(rule) => setE({ ...e, rule })}
       />
+      {!isHoliday && <label>
+        What happens?
+        <select
+          value={e.operation || e.kind}
+          onChange={(x) =>
+            setE({ ...e, operation: x.target.value === "timing" ? "timing" : undefined, kind: x.target.value === "timing" ? "working" : x.target.value as typeof e.kind, overridesHoliday: x.target.value === "working" ? e.overridesHoliday : false, scheduleId: x.target.value === "holiday" ? undefined : e.scheduleId })
+          }
+        >
+          {resolverVersion===2 && <option value="timing">Different bell timing (does not open a holiday)</option>}
+          <option value="holiday">Full holiday</option>
+          <option value="working">Working-day exception</option>
+          <option value="half-day">
+            Half day (also configure a matching bell schedule)
+          </option>
+        </select>
+      </label>}
       {["weekly", "recurring", "date"].includes(e.rule.type) && <RecurrencePreview yearId={yearId} rule={e.rule} />}
-      {e.kind === "working" && <label className="checkbox-row"><input type="checkbox" checked={!!e.overridesHoliday}
+      {resolverVersion===2 && !isHoliday && e.kind !== "holiday" && <section className="schedule-choice"><label>Bell schedule<select value={e.scheduleId || ""} onChange={x=>setE({...e,scheduleId:x.target.value || undefined})}><option value="">Inherit applicable timing</option>{templates.filter(s=>e.kind==="half-day" ? s.dayType==="half" : e.operation ? true : s.dayType!=="half").map(s=><option key={s.id} value={s.id}>{s.name} · {s.dayType || "full"}</option>)}</select></label><Button onClick={()=>setEditingSchedule(true)}>Create or clone special schedule</Button><p className="form-help">A half-day requires a complete half-day template. A working exception cannot reopen a Default Holiday.</p></section>}
+      <EffectiveRulePreview resolverVersion={resolverVersion} yearId={yearId} board={board} boards={(boards || [board]).map(b=>customSchedule && b.id===board.id ? {...b,schedules:[...b.schedules.filter(s=>s.id!==customSchedule.id),customSchedule]}:b)} entry={e} kind="events" />
+      {resolverVersion !== 2 && e.kind === "working" && <label className="checkbox-row"><input type="checkbox" checked={!!e.overridesHoliday}
         onChange={(x) => { if (x.target.checked && !window.confirm("Explicitly reopen an otherwise full holiday for these targets on this specific date?")) return; setE({ ...e, overridesHoliday: x.target.checked }); }} />
         Explicitly reopen a full holiday (specific-date rule required)</label>}
+      {relationshipIssues.length>0 && <div className="notice amber-notice" role="status"><strong>Resolve before publishing</strong><ul>{relationshipIssues.map(message=><li key={message}>{message}</li>)}</ul></div>}
       {error && <div className="notice error" role="alert">{error}</div>}
       <footer className="form-footer">
+        <Button disabled={busy} onClick={onCancel}>Cancel</Button>
         <Button
           variant="dark"
           disabled={busy || !e.name.trim()}

@@ -1,4 +1,5 @@
 "use client";
+import { statusTone, pageTone, type Tone } from "../lib/design-system";
 import { ShadcnButton } from "./ui/button";
 import {
   Dialog,
@@ -76,49 +77,41 @@ import {
   type Slot,
 } from "../../../packages/domain/src";
 import { label, type RecordData } from "../lib/api";
-export function Badge({ value }: { value: string }) {
-  return (
-    <span
-      className={
-        "badge " +
-        (value === "ACTIVE" || value === "PAID" || value === "APPROVED"
-          ? "green"
-          : value.includes("DRAFT") ||
-              value.includes("PENDING") ||
-              value === "ONBOARDING" ||
-              value === "INCOMPLETE_ACTIVE"
-            ? "amber"
-            : "gray")
-      }
-    >
-      <i />
-      {label(value)}
-    </span>
-  );
+export function Badge({value}:{value:string}) {
+  const status=String(value || "NOT_STARTED"),tone=statusTone(status);
+  return <span className={`badge ${tone==="success"?"green":tone==="warning"?"amber":"gray"}`} data-tone={tone}><i aria-hidden="true"/>{label(status)}</span>;
 }
 export function Button({
   children,
   onClick,
   variant = "",
   disabled = false,
+  loading = false,
+  loadingLabel,
   type = "button",
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
   children: React.ReactNode;
   variant?: string;
+  loading?: boolean;
+  loadingLabel?: string;
 }) {
+  const nodes=React.Children.toArray(children);
+  const readable=(node:React.ReactNode):boolean=>typeof node==="string" ? !!node.trim() : typeof node==="number" || React.isValidElement<{children?:React.ReactNode}>(node) && React.Children.toArray(node.props.children).some(readable);
+  const hasText=nodes.some(readable);
+  const icon=nodes.find(React.isValidElement) as React.ReactElement | undefined;
+  const iconName=icon ? (icon.type as {displayName?:string}).displayName || "" : "";
+  const iconLabels:Record<string,string>={Pencil:"Edit",Trash2:"Delete",Trash:"Delete",Copy:"Copy",X:"Close",Plus:"Add",ChevronLeft:"Previous",ChevronRight:"Next",ArrowLeft:"Back",ArrowRight:"Next",MoreHorizontal:"More actions",Search:"Search",Save:"Save"};
+  const accessibleLabel=props["aria-label"] || props.title || (!hasText ? iconLabels[iconName] : undefined);
   return (
     <ShadcnButton
       {...props}
       type={type}
-      variant={
-        variant === "dark"
-          ? "default"
-          : variant === "danger"
-            ? "destructive"
-            : "outline"
-      }
-      className={[variant, props.className].filter(Boolean).join(" ")}
+      variant={variant === "dark" || variant === "primary" ? "default" : variant === "danger" || variant === "destructive" ? "destructive" : variant === "ghost" ? "ghost" : variant === "secondary" ? "secondary" : "outline"}
+      loading={loading}
+      loadingLabel={loadingLabel}
+      aria-label={accessibleLabel}
+      className={[variant, props.className, !hasText && icon ? "icon-only" : ""].filter(Boolean).join(" ")}
       disabled={disabled}
       onClick={onClick}
     >
@@ -231,6 +224,10 @@ export function Form({
   onCancel?: () => void;
 }) {
   const formId = React.useId();
+  const sections=fields.reduce<{title?:string;key:string;fields:Field[]}[]>((groups,field)=>{
+    if(field.section || !groups.length)groups.push({title:field.section,key:`${field.section || "fields"}-${groups.length}`,fields:[]});
+    groups[groups.length-1].fields.push(field);return groups;
+  },[]);
   const {
     register,
     handleSubmit,
@@ -274,15 +271,15 @@ export function Form({
         void save().catch(() => {});
       }}
     >
-      <div className="form-grid">
-        {fields.map((f) => (
+      {fields.some(field=>field.required) && <p className="form-required-note">Fields marked <span className="required">*</span> are required.</p>}
+      <div className="form-sections">{sections.map(section=><fieldset className="form-fieldset" key={section.key}>{section.title && <legend>{section.title}</legend>}<div className="form-grid">
+        {section.fields.map((f) => (
           <React.Fragment key={f.key}>
-          {f.section && <div className="form-section-heading"><h3>{f.section}</h3></div>}
           <label key={f.key} className={f.type === "textarea" ? "span2" : ""}>
             {f.label}
-            {f.required && <b className="required"> *</b>}
+            {f.required ? <b className="required" aria-hidden="true"> *</b> : <span className="optional-label" aria-hidden="true">Optional</span>}
             {f.options ? (
-              <select aria-invalid={!!errors[f.key]} aria-describedby={[f.help ? `${formId}-${f.key}-help` : "", errors[f.key] ? `${formId}-${f.key}-error` : ""].filter(Boolean).join(" ") || undefined} {...register(f.key, { required: f.required })}>
+              <select aria-label={f.label} aria-required={f.required || undefined} aria-invalid={!!errors[f.key]} aria-describedby={[f.help ? `${formId}-${f.key}-help` : "", errors[f.key] ? `${formId}-${f.key}-error` : ""].filter(Boolean).join(" ") || undefined} {...register(f.key, { required: f.required })}>
                 {f.options.map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
@@ -290,7 +287,7 @@ export function Form({
                 ))}
               </select>
             ) : f.type === "textarea" ? (
-              <Textarea aria-invalid={!!errors[f.key]} aria-describedby={[f.help ? `${formId}-${f.key}-help` : "", errors[f.key] ? `${formId}-${f.key}-error` : ""].filter(Boolean).join(" ") || undefined} {...register(f.key, { required: f.required })} />
+              <Textarea aria-label={f.label} aria-required={f.required || undefined} aria-invalid={!!errors[f.key]} aria-describedby={[f.help ? `${formId}-${f.key}-help` : "", errors[f.key] ? `${formId}-${f.key}-error` : ""].filter(Boolean).join(" ") || undefined} {...register(f.key, { required: f.required })} />
             ) : (
               <div className={f.type === "password" ? "field-input password-input" : "field-input"}>
               <Input
@@ -325,7 +322,7 @@ export function Form({
           </label>
           </React.Fragment>
         ))}
-      </div>
+      </div></fieldset>)}</div>
       {error && (
         <div role="alert" className="notice error">
           {error}
@@ -333,14 +330,7 @@ export function Form({
       )}
       <footer className="form-footer">
         {onCancel && <Button disabled={isSubmitting} onClick={onCancel}>Cancel</Button>}
-        <Button type="submit" variant="dark" disabled={isSubmitting}>
-          {isSubmitting ? (
-            <Loader2 size={15} className="spin" />
-          ) : (
-            <Check size={15} />
-          )}{" "}
-          {submit}
-        </Button>
+        <Button type="submit" variant="dark" loading={isSubmitting} loadingLabel={/sign in/i.test(submit)?"Signing in…":"Saving…"}>{submit}</Button>
       </footer>
     </form>
   );
@@ -363,7 +353,9 @@ export function PageHead({
   title,
   text,
   action,
+  tone,
 }: {
+  tone?: Tone;
   eyebrow: string;
   title: string;
   text: string;
@@ -372,7 +364,7 @@ export function PageHead({
   const Icon = /organization/i.test(title) ? Building2 : /school/i.test(title) ? School : /subscription/i.test(title) ? Receipt : /onboarding/i.test(title) ? Route : /request|setting/i.test(title) ? Settings : Layers;
   const caption = eyebrow.charAt(0).toUpperCase() + eyebrow.slice(1).toLowerCase();
   return (
-    <div className="page-head">
+    <header className="page-head" data-tone={tone || pageTone(title)}>
       <div className="record-heading">
         <span className="record-type-icon"><Icon size={23} /></span>
         <div><p className="eyebrow">{caption}</p>
@@ -382,8 +374,8 @@ export function PageHead({
         </h1>
         <p>{text}</p></div>
       </div>
-      {action}
-    </div>
+      {action && <div className="page-actions">{action}</div>}
+    </header>
   );
 }
 export function DetailGrid({
@@ -393,12 +385,13 @@ export function DetailGrid({
   record: RecordData;
   keys: string[];
 }) {
+  const names:Record<string,string>={name:"Name",legalName:"Legal name",contactName:"Contact person",postalCode:"Postal code",registration:"Registration number",officer:"School relation officer",phone:"Contact number",email:"Email address",classroomLimit:"Classroom allowance",userLimit:"User allowance",startsAt:"Valid from",endsAt:"Valid until",agreementStatus:"Agreement status",paymentStatus:"Payment status",paymentReference:"Payment reference"};
   return (
     <dl className="detail-grid">
       {keys.map((k) => (
         <div key={k}>
-          <dt>{k.replace(/([A-Z])/g, " $1")}</dt>
-          <dd>{record[k] === undefined || record[k] === null || record[k] === "" ? "Not provided" : record[k]}</dd>
+          <dt>{names[k] || (k.charAt(0).toUpperCase()+k.slice(1)).replace(/([a-z])([A-Z])/g,"$1 $2")}</dt>
+          <dd>{record[k] === undefined || record[k] === null || record[k] === "" ? "Not provided" : Array.isArray(record[k]) ? record[k].join(" · ") : record[k]}</dd>
         </div>
       ))}
     </dl>

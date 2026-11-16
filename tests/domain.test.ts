@@ -203,6 +203,7 @@ describe("Recurrence and deterministic resolution", () => {
     expect(resolve(b, classroom(b), "2026-11-14")).toMatchObject({
       status: "holiday",
       reason: "Festival holiday",
+      calendarRuleId: b.events[0].id,
     });
   });
   it("weekly non-working days have no schedule", () => {

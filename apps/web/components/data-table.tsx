@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   useReactTable,
   getCoreRowModel,
@@ -38,6 +38,7 @@ function InlineCell({
   onEdit: (r: RecordData, p: RecordData) => Promise<void>;
 }) {
   const original = String(row[field.key] ?? "");
+  const errorId = useId();
   const [value, setValue] = useState(original);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -105,6 +106,7 @@ function InlineCell({
     disabled: saving,
     "aria-label": `Edit ${field.label} for ${row.name || row.reference || "record"}`,
     "aria-invalid": !!error,
+    "aria-describedby": error ? errorId : undefined,
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       setValue(e.target.value);
       setError("");
@@ -143,7 +145,7 @@ function InlineCell({
       )}{" "}
       {saving && <Loader2 size={12} className="spin" />}
       {error && (
-        <small className="error-text" role="alert">
+        <small id={errorId} className="error-text" role="alert">
           {error}
         </small>
       )}
@@ -159,17 +161,22 @@ export function DataTable({
   editableFields = [],
   onEdit,
   hideSearch = false,
+  emptyTitle,
+  emptyText,
 }: {
   data: RecordData[];
   columns: ColumnDef<RecordData, any>[];
   placeholder?: string;
   hideSearch?: boolean;
+  emptyTitle?: string;
+  emptyText?: string;
   bulkAction?: (rows: RecordData[]) => void;
   bulkActions?: BulkAction[];
   editableFields?: EditableField[];
   onEdit?: (row: RecordData, patch: RecordData) => Promise<void>;
 }) {
   const { navigate } = useNavigation();
+  const filtersId = useId();
   const [globalFilter, setGlobalFilter] = useState(""),
     [sorting, setSorting] = useState<SortingState>([]),
     [rowSelection, setRowSelection] = useState<Record<string, boolean>>({}),
@@ -233,7 +240,7 @@ export function DataTable({
     }
   };
   return (
-    <div className="table-wrap">
+    <div className="table-wrap" aria-busy={busy || undefined}>
       <div className="table-toolbar">
         {!hideSearch && <div className="search">
           <Search size={16} />
@@ -247,15 +254,17 @@ export function DataTable({
             placeholder={placeholder}
           />
         </div>}
-        <Button aria-expanded={filtersOpen} onClick={() => setFiltersOpen(!filtersOpen)}>
+        <Button aria-expanded={filtersOpen} aria-controls={filtersId} onClick={() => setFiltersOpen(!filtersOpen)}>
           <SlidersHorizontal size={14} /> Filters{columnFilters.length ? ` (${columnFilters.length})` : ""}
         </Button>
-        <span className="muted">
+        {(globalFilter || columnFilters.length>0) && <Button className="table-filter-reset" variant="ghost" onClick={()=>void navigate(()=>{setGlobalFilter("");setColumnFilters([]);})}>Reset filters</Button>}
+        <span className="muted" aria-live="polite">
           {table.getFilteredRowModel().rows.length} records
         </span>
         {selected.length > 0 && allActions.length > 0 && (
-          <div className="row-actions">
+          <div className="selection-bar" role="group" aria-label="Selected record actions">
             <span>{selected.length} selected</span>
+            <Button variant="ghost" disabled={busy} onClick={()=>{setRowSelection({});setConfirmation(null);}}>Clear selection</Button>
             {allActions.length > 1 && <select
               aria-label="Bulk action"
               value={actionIndex}
@@ -285,7 +294,7 @@ export function DataTable({
         )}
       </div>
       {filtersOpen && (
-        <div className="column-filters">
+        <div id={filtersId} className="column-filters" role="group" aria-label="Column filters">
           {table
             .getAllLeafColumns()
             .filter((c) => c.getCanFilter())
@@ -371,7 +380,7 @@ export function DataTable({
           {error}
         </div>
       )}
-      <div className="table-scroll">
+      <div className="table-scroll" role="region" tabIndex={0} aria-label="Records table; scroll horizontally for more columns">
         <table>
           <thead>
             {table.getHeaderGroups().map((g) => (
@@ -455,16 +464,16 @@ export function DataTable({
         </table>
         {!table.getRowModel().rows.length && (
           <div className="empty">
-            <h3>{data.length ? "No matching records" : "No records yet"}</h3>
+            <h3>{emptyTitle || (data.length ? "No matching records" : "No records yet")}</h3>
             <p>
-              {data.length
+              {emptyText || (data.length
                 ? "Change or clear the filters to see more records."
-                : "Create your first record to get started."}
+                : "Create your first record to get started.")}
             </p>
           </div>
         )}
       </div>
-      <div className="pagination">
+      <div className="pagination" aria-label="Table pagination">
         <span>
           Page {table.getState().pagination.pageIndex + 1} of{" "}
           {Math.max(1, table.getPageCount())}

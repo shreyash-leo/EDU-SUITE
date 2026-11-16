@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-16",
+  "productionBuild": "passed",
+  "typecheck": "passed",
+  "unitAndRendering": {
+    "passed": 232,
+    "skippedDatabaseTestsInDefaultRun": 7
+  },
+  "isolatedDatabase": {
+    "passed": 7,
+    "disposableSchemaRemoved": true
+  },
+  "isolatedHttp": {
+    "passed": 1,
+    "disposableSchemaRemoved": true
+  },
+  "automatedBrowser": {
+    "status": "blocked before application assertions",
+    "reason": "Chromium macOS MachPortRendezvous permission failure",
+    "runnerFailed": 1,
+    "notRun": 6
+  },
+  "manualBrowser": "in-app browser: see browser-layout-checks.json and report",
+  "liveCustomerMutations": false
+}

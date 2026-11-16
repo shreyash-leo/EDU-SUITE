@@ -33,3 +33,5 @@ describe("Distinct client school entry points", () => {
  it("Review & History retains its own entry", () => expect(schoolEntryDestination("Review & History","ACTIVE","ACTIVE")).toEqual({view:"workspace",intent:"review"}));
  it("inactive schools can only open read-only details", () => expect(schoolEntryDestination("Structure Management","INACTIVE","ACTIVE")).toEqual({view:"details",intent:"default"}));
 });
+
+it("does not label an unchanged working draft as unpublished changes",()=>expect(structureStatus({draftRevisionId:"draft",publishedRevisionId:"active",publishedRevision:{status:"ACTIVE"}},false)).toBe("EDITING_DRAFT_NO_CHANGES"));
