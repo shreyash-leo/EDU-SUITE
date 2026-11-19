@@ -144,6 +144,8 @@ See `VERIFICATION.md` for the exact checks completed in the authoring session an
 
 This deliverable is the requested PostgreSQL/NestJS project. It has not been published to a substitute static hosting platform.
 
+For a production VPS deployment with automatic HTTPS, private database/object storage, health-gated startup, pinned service versions, backups, and update commands, follow [`DEPLOYMENT.md`](DEPLOYMENT.md). Use `compose.production.yaml`; the default `compose.yaml` remains the local development stack.
+
 Before production, use HTTPS; set `NODE_ENV=production`, `WEB_ORIGIN` to the exact public origin, production database/storage credentials and an accessible `S3_PUBLIC_URL`. Keep NestJS and PostgreSQL private behind the frontend/reverse proxy. Production cookies use `__Host-` naming, Secure, HttpOnly and SameSite=Strict. Development cookies support localhost HTTP.
 
 Production never runs the development seed. Provision the initial administrator once using `npm run admin:provision` with `PROVISION_ADMIN_EMAIL`, `PROVISION_ADMIN_NAME` and `PROVISION_ADMIN_PASSWORD` supplied securely in the process environment. Existing administrator credentials are never overwritten by this command. The password must be replaced on first login.

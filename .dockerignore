@@ -3,12 +3,18 @@ node_modules
 **/.next
 **/.next-dev
 **/dist
-.env
+.env*
 .git
+.github
 .verification
 *.zip
 *.tsbuildinfo
 backups
+artifacts
+docs
+e2e
+tests
+*.md
 
 test-results
 playwright-report

@@ -1,0 +1,185 @@
+name: plan-edu-suite
+
+x-app-security: &app-security
+  init: true
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    <<: *app-security
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17.7-bookworm
+    <<: *app-security
+    environment:
+      POSTGRES_USER: plan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: plan
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U plan -d plan"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 30s
+
+  minio:
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+      target: server
+    <<: *app-security
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env.production}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env.production}
+    volumes:
+      - assets_data:/data
+
+  bucket:
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+      target: client
+    init: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - >-
+        until mc alias set local http://minio:9000 "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"; do sleep 2; done;
+        mc mb --ignore-existing "local/$$S3_BUCKET";
+        mc anonymous set download "local/$$S3_BUCKET"
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env.production}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env.production}
+      S3_BUCKET: ${S3_BUCKET:-plan-assets}
+    depends_on:
+      minio:
+        condition: service_started
+
+  migrate:
+    build:
+      context: .
+      target: migration
+    init: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://plan:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/plan
+      WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN in .env.production}
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:?Set S3_PUBLIC_URL in .env.production}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-plan-assets}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env.production}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env.production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      target: api
+    <<: *app-security
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      DATABASE_URL: postgresql://plan:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/plan
+      WEB_ORIGIN: ${WEB_ORIGIN:?Set WEB_ORIGIN in .env.production}
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:?Set S3_PUBLIC_URL in .env.production}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-plan-assets}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env.production}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env.production}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-false}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      bucket:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
+
+  web:
+    build:
+      context: .
+      target: web
+      args:
+        API_INTERNAL_URL: http://api:4000
+    <<: *app-security
+    environment:
+      NODE_ENV: production
+      API_INTERNAL_URL: http://api:4000
+      NEXT_TELEMETRY_DISABLED: 1
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      api:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  backups:
+    image: postgres:17.7-bookworm
+    <<: *app-security
+    environment:
+      PGHOST: postgres
+      PGUSER: plan
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      PGDATABASE: plan
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - >-
+        while true; do
+          stamp=$$(date -u +%Y%m%dT%H%M%SZ);
+          pg_dump -Fc -f "/backups/plan-$$stamp.dump" &&
+          find /backups -name 'plan-*.dump' -mtime +"$$BACKUP_RETENTION_DAYS" -delete;
+          sleep 86400;
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+volumes:
+  postgres_data:
+  assets_data:
+  caddy_data:
+  caddy_config:

@@ -1,13 +1,13 @@
 # Build from official source because the old registry images are unavailable.
 # Go builds for the Docker host's CPU, including Apple Silicon.
 FROM golang:1.25-bookworm AS server-build
-ARG MINIO_REVISION=master
+ARG MINIO_REVISION=RELEASE.2025-10-15T17-29-55Z
 RUN git clone --depth 1 --branch "$MINIO_REVISION" https://github.com/minio/minio.git /src
 WORKDIR /src
 RUN CGO_ENABLED=0 go build -trimpath -o /out/minio .
 
 FROM golang:1.25-bookworm AS client-build
-ARG MC_REVISION=master
+ARG MC_REVISION=RELEASE.2025-08-13T08-35-41Z
 RUN git clone --depth 1 --branch "$MC_REVISION" https://github.com/minio/mc.git /src
 WORKDIR /src
 RUN CGO_ENABLED=0 go build -trimpath -o /out/mc .

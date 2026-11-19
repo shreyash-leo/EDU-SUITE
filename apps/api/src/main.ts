@@ -207,7 +207,10 @@ class ApiController {
     res.setHeader("Cache-Control", "no-store");
     const path = req.path.replace(/^\/api/, "").replace(/\/$/, "") || "/";
     const method = req.method;
-    if (path === "/health") return { ok: true };
+    if (path === "/health") {
+      await db.$queryRaw`SELECT 1`;
+      return { ok: true };
+    }
     if (!["GET", "HEAD"].includes(method)) {
       const origin = req.headers.origin;
       if (
@@ -469,6 +472,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: ["error", "warn", "log"],
   });
+  app.getHttpAdapter().getInstance().set("trust proxy", 1);
   app.use((req: Request, res: Response, next: () => void) => {
     const started = Date.now();
     res.on("finish", () => {
@@ -570,21 +574,23 @@ async function bootstrap() {
         : {}),
     };
   }
-  SwaggerModule.setup("api/docs", app, {
-    openapi: "3.0.0",
-    info: {
-      title: "PLAN EDU SUITE",
-      version: "1.0.0",
-      description:
-        "Session cookie authentication; use /api/auth/login, then x-csrf-token for writes. See API.md for request schemas.",
-    },
-    paths,
-    components: {
-      securitySchemes: {
-        cookieAuth: { type: "apiKey", in: "cookie", name: cookieName },
+  if (process.env.ENABLE_API_DOCS !== "false") {
+    SwaggerModule.setup("api/docs", app, {
+      openapi: "3.0.0",
+      info: {
+        title: "PLAN EDU SUITE",
+        version: "1.0.0",
+        description:
+          "Session cookie authentication; use /api/auth/login, then x-csrf-token for writes. See API.md for request schemas.",
       },
-    },
-  });
+      paths,
+      components: {
+        securitySchemes: {
+          cookieAuth: { type: "apiKey", in: "cookie", name: cookieName },
+        },
+      },
+    });
+  }
   await app.listen(Number(process.env.API_PORT || 4000), "0.0.0.0");
   let running = false;
   const tick = async () => {

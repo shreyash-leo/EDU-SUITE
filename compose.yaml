@@ -41,7 +41,9 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-plan_local_secret}
     depends_on: [minio]
   api:
-    build: .
+    build:
+      context: .
+      target: migration
     env_file: .env
     environment:
       NODE_ENV: ${NODE_ENV:-development}
@@ -59,7 +61,11 @@ services:
       bucket: { condition: service_completed_successfully }
     restart: unless-stopped
   web:
-    build: .
+    build:
+      context: .
+      target: migration
+      args:
+        API_INTERNAL_URL: http://api:4000
     environment:
       NODE_ENV: production
       API_INTERNAL_URL: http://api:4000
