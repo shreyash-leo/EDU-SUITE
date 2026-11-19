@@ -18,7 +18,9 @@ export async function api(path: string, method = "GET", body?: unknown) {
     .catch(() => ({ message: "Unexpected server response" }));
   if (!r.ok)
     throw Error(
-      typeof data.message === "string"
+      Array.isArray(data.issues) && data.issues.some((issue: RecordData) => issue.severity === "error")
+        ? data.issues.filter((issue: RecordData) => issue.severity === "error").map((issue: RecordData) => issue.message).join("; ")
+        : typeof data.message === "string"
         ? data.message
         : JSON.stringify(data.message || data),
     );

@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "predev": "node scripts/check-runtime.cjs",
+    "predev": "node scripts/check-runtime.cjs && node scripts/check-dev-ports.cjs",
     "dev": "concurrently -n api,web \"npm run dev -w @plan/api\" \"npm run dev -w @plan/web\"",
     "build": "npm run build -w @plan/api && npm run build -w @plan/web",
     "typecheck": "tsc -p apps/api/tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit",

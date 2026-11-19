@@ -42,7 +42,7 @@ async function ready(address) {
         processes.push(child);
       }
       await ready("http://localhost:4401/api/health");
-      if (browser) { await ready("http://localhost:3301"); run(["node_modules/@playwright/test/cli.js", "test", "--max-failures=1"], extra); }
+      if (browser) { await ready("http://localhost:3301"); run(["node_modules/@playwright/test/cli.js", "test", ...process.argv.slice(process.argv.indexOf("--browser") + 1), "--max-failures=1"], extra); }
       else run(["--test", "tests/http.e2e.mjs"], extra);
     }
   } catch (error) { console.error(error.message); process.exitCode = 1; }

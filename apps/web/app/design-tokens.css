@@ -1,29 +1,32 @@
 /* Authoritative platform tokens. Feature layout files consume the aliases below. */
 :root {
-  --brand: #4f46e5;
-  --brand-hover: #4338ca;
-  --brand-soft: #eef2ff;
-  --teal: #0f766e;
-  --teal-soft: #effaf7;
-  --success: #166534;
-  --success-soft: #f0fdf4;
-  --warning: #92400e;
-  --warning-soft: #fffbeb;
+  --lavender: #cbb9f4;
+  --lime: #ddefb9;
+  --ink: #202027;
+  --brand: #7053a7;
+  --brand-hover: #5b418d;
+  --brand-soft: #eee7fb;
+  --teal: #45652d;
+  --teal-soft: #eff6df;
+  --success: #365b27;
+  --success-soft: #dfefc4;
+  --warning: #825b2c;
+  --warning-soft: #fff0da;
   --danger: #b42318;
   --danger-soft: #fff1f2;
-  --info: #0369a1;
-  --info-soft: #f0f9ff;
-  --advanced: #6d28d9;
-  --advanced-soft: #f5f3ff;
-  --neutral: #475569;
-  --neutral-soft: #f1f5f9;
-  --bg: #f7f8fb;
+  --info: #63508d;
+  --info-soft: #f0eafa;
+  --advanced: #7053a7;
+  --advanced-soft: #eee7fb;
+  --neutral: #64616c;
+  --neutral-soft: #f1f0f3;
+  --bg: #f4f3f6;
   --surface: #ffffff;
-  --surface-subtle: #fafbfc;
-  --text: #172b45;
-  --muted: #5b6b80;
-  --border: #e2e7ef;
-  --border-strong: #bac5d4;
+  --surface-subtle: #f7f6f8;
+  --text: #202027;
+  --muted: #737078;
+  --border: #eeedf1;
+  --border-strong: #dcd9e2;
   --accent: var(--brand);
   --accent-hover: var(--brand-hover);
   --accent-soft: var(--brand-soft);
@@ -34,14 +37,14 @@
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
   --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
-  --radius-sm: 6px; --radius-md: 9px; --radius-lg: 12px;
+  --radius-sm: 12px; --radius-md: 24px; --radius-lg: 30px;
   --panel-radius: var(--radius-md);
-  --control-height: 38px;
-  --sidebar-width: 232px;
-  --app-bar-height: 64px;
+  --control-height: 44px;
+  --sidebar-width: 256px;
+  --app-bar-height: 88px;
   --page-gutter: clamp(20px, 2.2vw, 36px);
   --shadow-dialog: 0 18px 60px #14213826;
-  --focus-ring: 0 0 0 3px #4f46e526;
+  --focus-ring: 0 0 0 3px #7053a726;
 }
 [data-tone="brand"] { --tone: var(--brand); --tone-soft: var(--brand-soft); }
 [data-tone="teal"] { --tone: var(--teal); --tone-soft: var(--teal-soft); }

@@ -14,6 +14,7 @@ import {
 import { Search, ChevronLeft, ChevronRight, Loader2, SlidersHorizontal } from "lucide-react";
 import { ShadcnButton as Button } from "./ui/button";
 import { useNavigation, useNavigationGuard } from "../lib/navigation";
+import { usePortalPreferences } from "../lib/preferences";
 import type { RecordData } from "../lib/api";
 export type EditableField = {
   key: string;
@@ -93,6 +94,7 @@ function InlineCell({
     setError("");
   };
   useNavigationGuard({
+    autoSave: true,
     label: `${row.name || "Record"}: ${field.label}`,
     isDirty: () => !!flight.current || current.current !== clean.current,
     save,
@@ -175,6 +177,7 @@ export function DataTable({
   editableFields?: EditableField[];
   onEdit?: (row: RecordData, patch: RecordData) => Promise<void>;
 }) {
+  const { preferences } = usePortalPreferences();
   const { navigate } = useNavigation();
   const filtersId = useId();
   const [globalFilter, setGlobalFilter] = useState(""),
@@ -208,8 +211,9 @@ export function DataTable({
     getFilteredRowModel: getFilteredRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize: 10 } },
+    initialState: { pagination: { pageSize: preferences.pageSize } },
   });
+  useEffect(() => { table.setPageSize(preferences.pageSize); }, [preferences.pageSize, table]);
   useEffect(() => {
     const valid = new Set(data.map((r, n) => String(r.id ?? n)));
     setRowSelection((old) =>

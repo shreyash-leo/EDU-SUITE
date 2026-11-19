@@ -26,7 +26,7 @@ export function BellCalendar({
   editable,
   onChange,
   onAdopt,
-  onReview,
+  onApply,
   onEdit,
   onDelete,
   year,
@@ -37,7 +37,7 @@ export function BellCalendar({
   editable: boolean;
   onChange: (b: Board) => void;
   onAdopt: () => void;
-  onReview: () => void;
+  onApply: () => void;
   onEdit: (type: string, record?: RecordData) => void;
   onDelete: (kind: string, record: RecordData) => void;
   year: RecordData;
@@ -145,10 +145,10 @@ export function BellCalendar({
     <>
       {previewError && <div className="notice error" role="alert">{previewError}</div>}
       {previewLoading && !["Default Bell Time", "Default Holidays", "Advanced Scheduling"].includes(view) && <p role="status">Resolving calendar…</p>}
-      {config.resolverVersion !== 2 && <div className="notice amber-notice"><div><strong>Existing calendar behavior</strong><p>Adopt the three-part workflow in this draft to use linked holiday overrides. Published versions retain their original rules. Review migrated holidays and any old reopening exceptions before publishing.</p></div><Button disabled={!editable} onClick={onAdopt}>Use three-part scheduling in draft</Button></div>}
+      {config.resolverVersion !== 2 && <div className="notice amber-notice"><div><strong>Existing calendar behavior</strong><p>Enable the three-part workflow to manage default bell times, holidays, and date-specific exceptions in separate sections.</p></div><Button disabled={!editable} onClick={onAdopt}>Enable three-part scheduling</Button></div>}
       <div className="bell-subnav" aria-label="Scheduling configuration">
         {[["Default Bell Time", "1 · Default Bell Timing"], ["Default Holidays", "2 · Default Holidays"], ["Advanced Scheduling", "3 · Advanced Scheduling"], ["Calendar", "Calendar & preview"]].map(([value, name]) => <button key={value} data-tone={value === "Default Holidays" ? "teal" : value === "Advanced Scheduling" ? "advanced" : value === "Calendar" ? "info" : "brand"} aria-pressed={view===value || value==="Calendar" && !["Default Bell Time","Default Holidays","Advanced Scheduling"].includes(view)} className={(value === "Calendar" ? !["Default Bell Time", "Default Holidays", "Advanced Scheduling"].includes(view) : view === value) ? "selected" : ""} onClick={() => setView(value)}>{value === "Calendar" ? <CalendarDays size={16} /> : <Clock size={16} />}{name}</button>)}
-        <button data-tone="success" disabled={!editable} onClick={onReview}>Review & Publish</button>
+        <button data-tone="success" disabled={!editable} onClick={onApply}>Save & apply</button>
       </div>
       {!["Default Bell Time", "Default Holidays", "Advanced Scheduling"].includes(view) && <div className="tabs compact calendar-view-tabs">{[["Calendar", "Monthly calendar"], ["Effective preview", "Classroom date preview"], ["Year summary", "Year summary"]].map(([value, name]) => <button key={value} type="button" aria-pressed={view === value} className={view === value ? "active" : ""} onClick={() => setView(value)}>{name}</button>)}</div>}
       <details className="filter-disclosure"><summary>Target filters · {targetLabel}</summary>
@@ -271,6 +271,7 @@ export function BellCalendar({
                         <Pencil size={14} /> Edit
                       </Button>
                       <Button
+                        variant="danger"
                         disabled={!editable}
                         aria-label={`Delete schedule ${s.name}`}
                         onClick={() => onDelete("schedule", s)}
@@ -311,7 +312,7 @@ export function BellCalendar({
       {view === "Default Bell Time" && <details className="coverage-panel" open><summary>Default coverage · {coverage.filter(r=>r.status==="Covered").length} of {coverage.length} operational classrooms</summary><DataTable data={coverage} columns={[{accessorKey:"name",header:"Classroom"},{accessorKey:"schedule",header:"Inherited schedule"},{accessorKey:"source",header:"Source"},{accessorKey:"status",header:"Coverage"}]}/></details>}
       {view === "Default Bell Time" && schedules.length > 5 && <div className="pagination"><span>{schedules.length} schedules</span><div className="row-actions"><Button disabled={schedulePage === 0} onClick={() => setSchedulePage(schedulePage - 1)}>Previous schedules</Button><Button disabled={(schedulePage + 1) * 5 >= schedules.length} onClick={() => setSchedulePage(schedulePage + 1)}>Next schedules</Button></div></div>}
       {view === "Advanced Scheduling" && <>
-        <div className="notice">Default Holidays take priority. Explicit child rules replace their parent; other advanced rules follow date and target specificity. Precedence: Specific date → Monthly recurrence → Weekly → Default; within each type: Classroom → Grade → Section → Board → School. Templates replace the complete schedule. Equal-priority collisions block publication.</div>
+        <div className="notice">Default Holidays take priority. More specific date and classroom rules override broader defaults. Resolve conflicting rules before applying.</div>
         {duplicateTemplates(rules.schedules).length>0 && <p className="notice amber-notice">{duplicateTemplates(rules.schedules).length} groups have identical bell templates. Review targets and dates before consolidating; no rules have been removed.</p>}
         <div className="section-head"><div><h2>Advanced scheduling rules</h2><p>Choose who is affected, when the rule applies and what should happen.</p></div><div className="row-actions"><select aria-label="New rule action" value={ruleAction} onChange={(e) => setRuleAction(e.target.value)}><option value="schedule">Different bell schedule</option><option value="half-day">Half-day schedule</option><option value="holiday">Full holiday</option><option value="working">Special working day</option></select><Button variant="dark" disabled={!editable || config.resolverVersion!==2} onClick={() => onEdit("event", { suggestedRule: "recurring", suggestedAction: ruleAction, configurationPart: "advanced", suggestedDayType: ruleAction === "half-day" ? "half" : "full" })}>Add rule</Button></div></div>
         <DataTable data={[
@@ -502,6 +503,7 @@ export function BellCalendar({
                       <Pencil size={14} />
                     </Button>
                     <Button
+                      variant="danger"
                       disabled={!editable}
                       aria-label={`Delete calendar rule ${c.row.original.name}`}
                       onClick={() => onDelete("event", c.row.original)}

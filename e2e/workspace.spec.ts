@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+test.use({ actionTimeout: 10000 });
 const origin = new URL(process.env.E2E_WEB_URL || "http://localhost:3000")
   .origin;
 async function call(page: Page, path: string, method = "GET", data?: unknown) {
@@ -72,22 +73,21 @@ test("organization fields remain read-only until Edit is opened and saved", asyn
   await expect(updatedRow).toContainText("Private company");
   await expect(updatedRow.getByRole("textbox")).toHaveCount(0);
 });
-test("platform settings require an explicit discard or a successful save", async ({
+test("platform settings retain inputs across navigation without confirmation dialogs", async ({
   page,
 }) => {
   const before = await call(page, "/settings");
   await section(page, "Requests & Settings");
   await page.getByRole("button", { name: "Platform settings", exact: true }).click();
   const note = page.getByLabel("Support information");
-  await note.fill("Unpublished support note " + randomUUID());
+  const retained = "Unpublished support note " + randomUUID();
+  await note.fill(retained);
   await section(page, "Organizations");
-  const guard = page.getByRole("dialog", { name: "Unsaved changes" });
-  await expect(guard).toBeVisible();
-  await guard.getByRole("button", { name: "Discard Unsaved Changes" }).click();
+  await expect(page.getByRole("heading", { name: "Organizations", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await section(page, "Requests & Settings");
-  await expect(page.getByLabel("Support information")).toHaveValue(
-    before.values.supportNotes,
-  );
+  await page.getByRole("button", { name: "Platform settings", exact: true }).click();
+  await expect(page.getByLabel("Support information")).toHaveValue(retained);
   const next = "Verified browser setting " + randomUUID();
   await page.getByLabel("Support information").fill(next);
   await page.getByRole("button", { name: "Save platform settings" }).click();
@@ -101,7 +101,7 @@ test("platform settings require an explicit discard or a successful save", async
     lock: saved.lock,
   });
 });
-test("schedule conflicts highlight both slots, survive save-and-close, and block publication until corrected", async ({
+test("schedule conflicts highlight both slots, survive save-and-close, and block application until corrected", async ({
   page,
 }) => {
   const suffix = randomUUID().slice(0, 8),
@@ -215,7 +215,7 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await page.getByRole("row").filter({ hasText: name }).getByRole("button", { name: "Open School", exact: true }).click();
   await expect(page.getByRole("navigation", { name: "School details sections" })).toBeVisible();
   await page.screenshot({path: "/tmp/plan-client-school-details.png", fullPage: true});
-  await page.getByRole("button", { name: "Continue Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Open configuration", exact: true }).click();
   await page.getByRole("button", { name: "Add multiple grades", exact: true }).click();
   const bulkGrades = page.getByRole("region", { name: "Add multiple grades", exact: true });
   await bulkGrades.getByRole("button", { name: "Generate preview", exact: true }).click();
@@ -229,7 +229,7 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await page.getByRole("button", { name: "Add grades", exact: true }).click();
   await page.getByRole("checkbox", { name: "Select all filtered rows", exact: true }).check();
   await page.getByRole("button", { name: "Assign selected grades", exact: true }).click();
-  await page.getByRole("button", { name: "Confirm assignment", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Confirm assignment", exact: true })).toHaveCount(0);
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   const assigned = await call(page, `/years/${year.id}/config`);
   expect(assigned.config.boards[0].grades.every((g: { sectionId: string }) => g.sectionId === sectionId)).toBe(true);
@@ -268,33 +268,21 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await expect(modal.getByText(/P2 overlaps P1/)).toBeVisible();
   await expect(modal.locator(".slot-row.invalid-slot")).toHaveCount(2);
   await modal.getByRole("button", { name: "Back to workspace" }).click();
-  const guard = page.getByRole("dialog", { name: "Unsaved changes" });
-  await guard.getByRole("button", { name: "Save & continue" }).click();
-  await expect(guard).not.toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Unsaved changes" })).toHaveCount(0);
   await expect(modal).not.toBeVisible();
   const stored = await call(page, `/years/${year.id}/config`);
   expect(stored.config.boards[0].schedules[0].slots[1].start).toBe(510);
-  await page.getByRole("button", { name: /Review & activate/ }).click();
-  let review = page.getByRole("region", { name: "Review your configuration" });
-  await expect(review.getByText(/overlap with preceding slot/).first()).toBeVisible();
-  await review.getByRole("button", { name: "Publish configuration" }).click();
-  await expect(review.getByText("Resolve blocking errors first")).toBeVisible();
-  expect(
-    (await call(page, `/years/${year.id}/config`)).year.publishedRevisionId,
-  ).toBeNull();
-  await review.getByRole("button", { name: "Back to workspace" }).click();
+  await page.getByRole("button", { name: "Save & apply", exact: true }).first().click();
+  await expect(page.locator('.notice.error[role="alert"]')).toContainText(/overlap/i);
+  expect((await call(page, `/years/${year.id}/config`)).year.publishedRevisionId).toBeNull();
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   modal = page.getByRole("region", { name: "Bell schedule" });
   await modal.locator('input[aria-label="Start time"]').nth(1).fill("09:00");
   await modal.getByRole("button", { name: "Continue", exact: true }).click();
-  await modal.getByRole("button", { name: "Save schedule to draft" }).click();
-  await page.getByRole("button", { name: /Review & activate/ }).click();
-  review = page.getByRole("region", { name: "Review your configuration" });
-  await review.getByRole("button", { name: "Publish configuration" }).click();
-  await expect(review).not.toBeVisible();
-  expect((await call(page, `/years/${year.id}/config`)).revision.status).toBe(
-    "ACTIVE",
-  );
+  await modal.getByRole("button", { name: "Save schedule" }).click();
+  await page.getByRole("button", { name: "Save & apply", exact: true }).first().click();
+  await expect(page.locator('.toast[role="status"]')).toContainText("Configuration saved and applied.");
+  expect((await call(page, `/years/${year.id}/config`)).year.publishedRevisionId).not.toBeNull();
   await page.getByRole("button", { name: "Calendar & preview", exact: true }).click();
   await page.getByRole("button", { name: "Year summary", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Academic year totals", exact: true })).toBeVisible();
@@ -302,35 +290,18 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await expect(page.getByRole("navigation").getByRole("button", { name: "Academic Years", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Manage academic years", exact: true }).click();
   await expect(page.getByRole("heading", { name: `Academic years · ${name}`, exact: true })).toBeVisible();
-  await section(page, "Review & History");
-  await page.getByLabel("Search schools", { exact: true }).fill(name);
-  await page.getByRole("row").filter({ hasText: name }).getByRole("button", { name: "Review & History", exact: true }).click();
-  const historicalSnapshot = await call(page, `/years/${year.id}/config`);
-  await call(page, `/years/${year.id}/draft`, "POST", {});
-  const laterDraft = await call(page, `/years/${year.id}/config`);
-  laterDraft.config.boards[0].grades[0].name = "Later published grade";
-  const laterSaved = await call(page, `/years/${year.id}/config`, "PUT", { config: laterDraft.config, lock: laterDraft.revision.lock, revisionId: laterDraft.revision.id });
-  await call(page, `/years/${year.id}/publish`, "POST", { lock: laterSaved.lock, revisionId: laterDraft.revision.id, summary: "Later publication for history refresh verification" });
-  await page.getByRole("button", { name: "View published versions", exact: true }).click();
-  const historicalPanel = page.getByRole("region", { name: "Published version history", exact: true });
-  await expect(historicalPanel).toBeVisible();
-  await historicalPanel.getByRole("button", { name: "View", exact: true }).last().click();
-  await expect(page).toHaveURL(new RegExp(`revision=${historicalSnapshot.revision.id}`));
-  await page.reload();
-  await expect(page).toHaveURL(new RegExp(`revision=${historicalSnapshot.revision.id}`));
-  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save draft", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Review & History", exact: true })).toHaveCount(0);
   await section(page, "Account & Subscription");
   await expect(page.getByRole("heading", { name: "Account & subscription", exact: true })).toBeVisible();
   await expect(page.getByText("BROWSER-" + suffix, { exact: true })).toBeVisible();
   await section(page, "Structure Management");
   await expect(page.getByRole("heading", { name: "Structure Management", exact: true })).toBeVisible();
   await page.getByLabel("Search schools", { exact: true }).fill(name);
-  await page.getByRole("row").filter({ hasText: name }).getByRole("button", { name: "Open Configuration", exact: true }).click();
+  await page.getByRole("row").filter({ hasText: name }).getByRole("button", { name: "Open configuration", exact: true }).click();
   await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Academic year", exact: true })).toHaveValue(year.id);
-  await page.getByRole("button", { name: "Edit configuration", exact: true }).click();
   await page.getByRole("button", { name: /Bell Time & Calendar/ }).click();
+  await page.getByRole("button", { name: "1 · Default Bell Timing", exact: true }).click();
   await page.getByRole("button", { name: "Add schedule", exact: true }).click();
   const wizard = page.getByRole("region", { name: "Bell schedule", exact: true });
   await wizard.getByLabel("Schedule name", { exact: true }).fill("Guided school default");
@@ -339,7 +310,7 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await wizard.getByLabel("Number of teaching periods", { exact: true }).fill("2");
   await wizard.getByLabel("Default period duration (minutes)", { exact: true }).fill("60");
   await wizard.getByRole("button", { name: "Continue", exact: true }).click();
-  await wizard.getByLabel("Routine", { exact: true }).selectOption("Assembly");
+  await wizard.getByRole("combobox", { name: "Routine", exact: true }).selectOption("Assembly");
   await wizard.getByRole("button", { name: "Add routine", exact: true }).click();
   await wizard.getByRole("button", { name: "Continue", exact: true }).click();
   await wizard.getByRole("button", { name: "Auto Assign", exact: true }).click();
@@ -347,37 +318,37 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await wizard.locator('input[aria-label="Start time"]').first().fill("08:05");
   await expect(wizard.locator('input[aria-label="Start time"]').first()).toHaveValue("08:00");
   await wizard.getByRole("button", { name: "Continue", exact: true }).click();
-  await wizard.getByRole("button", { name: "Save schedule to draft", exact: true }).click();
+  await wizard.getByRole("button", { name: "Save schedule", exact: true }).click();
   await expect(wizard).not.toBeVisible();
   const newDraft = await call(page, `/years/${year.id}/config`);
   expect(newDraft.config.boards[0].schedules).toHaveLength(2);
   expect(newDraft.published.boards[0].schedules).toHaveLength(1);
+  await page.getByRole("button", {name:"Enable three-part scheduling",exact:true}).click();
   await page.getByRole("button", { name: "3 · Advanced Scheduling", exact: true }).click();
   await page.getByRole("combobox", { name: "New rule action", exact: true }).selectOption("holiday");
   await page.getByRole("button", { name: "Add rule", exact: true }).click();
   const event = page.getByRole("region", { name: "Calendar event", exact: true });
   await event.getByLabel("Event name", { exact: true }).fill("Fourth Saturday closure");
   await event.getByRole("button", { name: "Fourth Saturday", exact: true }).click();
-  await event.getByRole("button", { name: "Save event to draft", exact: true }).click();
+  await event.getByRole("button", { name: "Save calendar event", exact: true }).click();
   await expect(event).not.toBeVisible();
-  expect((await call(page, `/years/${year.id}/config`)).config.boards[0].events[0].rule.nth).toBe(4);
-  await page.getByRole("button", {name:"Use three-part scheduling in draft",exact:true}).click();
-  await expect(page.getByRole("button", {name:"Use three-part scheduling in draft",exact:true})).toHaveCount(0);
+  expect((await call(page, `/years/${year.id}/config`)).config.boards[0].events.find((event: { name: string }) => event.name === "Fourth Saturday closure").rule.nth).toBe(4);
+  await expect(page.getByRole("button", {name:"Enable three-part scheduling",exact:true})).toHaveCount(0);
   await page.getByRole("button", {name:"2 · Default Holidays",exact:true}).click();
   await page.getByRole("button", {name:"Add holiday",exact:true}).click();
   const holiday = page.getByRole("region", {name:"Calendar event",exact:true});
   await holiday.getByLabel("Event name",{exact:true}).fill("Diwali vacation");
   await holiday.getByRole("button", {name:"Use inclusive holiday date range",exact:true}).click();
-  await holiday.getByRole("button", {name:"Save event to draft",exact:true}).click();
+  await holiday.getByRole("button", {name:"Save calendar event",exact:true}).click();
   await expect(holiday).not.toBeVisible();
   const afterHoliday = await call(page, `/years/${year.id}/config`);
   const parent = afterHoliday.config.boards[0].events.find((e:any)=>e.name==="Diwali vacation");
   expect(parent.configurationPart).toBe("default-holidays");
   await page.getByRole("row").filter({hasText:"Diwali vacation"}).getByRole("button",{name:"Add targeted override",exact:true}).click();
-  await expect(holiday.getByLabel("Parent holiday / vacation",{exact:true})).toHaveValue(parent.id);
+  await expect(holiday.getByRole("combobox",{name:"Parent holiday / vacation",exact:true})).toHaveValue(parent.id);
   await holiday.getByLabel("Event name",{exact:true}).fill("Classroom vacation");
   await holiday.getByRole("checkbox",{name:/1A/}).check();
-  await holiday.getByRole("button", {name:"Save event to draft",exact:true}).click();
+  await holiday.getByRole("button", {name:"Save calendar event",exact:true}).click();
   await expect(holiday).not.toBeVisible();
   const afterOverride=await call(page, `/years/${year.id}/config`);
   expect(afterOverride.config.resolverVersion).toBe(2);
@@ -388,9 +359,9 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await page.getByRole("button", {name:"Add rule",exact:true}).click();
   const timingRule=page.getByRole("region",{name:"Calendar event",exact:true});
   await timingRule.getByLabel("Event name",{exact:true}).fill("Targeted recurring timing");
-  await expect(timingRule.getByLabel("What happens?",{exact:true})).toHaveValue("timing");
-  await timingRule.getByLabel("Bell schedule",{exact:true}).selectOption(afterOverride.config.boards[0].schedules[0].id);
-  await timingRule.getByRole("button",{name:"Save event to draft",exact:true}).click();
+  await expect(timingRule.getByRole("combobox",{name:"What happens?",exact:true})).toHaveValue("timing");
+  await timingRule.getByRole("combobox",{name:"Bell schedule",exact:true}).selectOption(afterOverride.config.boards[0].schedules[0].id);
+  await timingRule.getByRole("button",{name:"Save calendar event",exact:true}).click();
   await expect(timingRule).not.toBeVisible();
   const afterTiming=await call(page, `/years/${year.id}/config`);
   expect(afterTiming.config.boards[0].events.find((e:any)=>e.name==="Targeted recurring timing").operation).toBe("timing");
@@ -400,7 +371,7 @@ test("schedule conflicts highlight both slots, survive save-and-close, and block
   await page.setViewportSize({width:768,height:1024});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
   await page.reload();
-  await expect(page.getByRole("button",{name:"Use three-part scheduling in draft",exact:true})).toHaveCount(0);
+  await expect(page.getByRole("button",{name:"Enable three-part scheduling",exact:true})).toHaveCount(0);
 
 });
 
@@ -506,9 +477,9 @@ test("client school inspection and configuration remain separate entry points", 
   await expect(page.locator(".portal-metrics").getByRole("button",{name:/Registered schools/})).toContainText("1");
   await section(page,"Schools");
   await expect(page.getByRole("navigation").getByRole("button",{name:"Academic Years",exact:true})).toHaveCount(0);
-  await page.getByLabel("School status",{exact:true}).selectOption("INACTIVE");
+  await page.getByRole("combobox",{name:"School status",exact:true}).selectOption("INACTIVE");
   await expect(page.getByText("No schools match",{exact:true})).toBeVisible();
-  await page.getByLabel("School status",{exact:true}).selectOption("ACTIVE");
+  await page.getByRole("combobox",{name:"School status",exact:true}).selectOption("ACTIVE");
   const row=page.getByRole("row").filter({hasText:schoolName});
   await row.getByRole("cell",{name:"CBSE",exact:true}).click();
   await expect(page).toHaveURL(/workflow=schoolDetails/);
@@ -535,6 +506,10 @@ test("client school inspection and configuration remain separate entry points", 
   await yearForm.getByLabel("Starting configuration").selectOption(years[0].id);
   await expect(yearForm.getByText("Copy preview",{exact:true})).toBeVisible();
   await yearForm.getByLabel("Academic year",{exact:true}).fill("Portal Year 2");
+  const copyStart = new Date(years[0].endsAt); copyStart.setUTCDate(copyStart.getUTCDate()+1);
+  const copyEnd = new Date(copyStart); copyEnd.setUTCFullYear(copyEnd.getUTCFullYear()+1); copyEnd.setUTCDate(copyEnd.getUTCDate()-1);
+  await yearForm.getByLabel("Start date",{exact:true}).fill(copyStart.toISOString().slice(0,10));
+  await yearForm.getByLabel("End date",{exact:true}).fill(copyEnd.toISOString().slice(0,10));
   await yearForm.getByRole("button",{name:"Create academic year",exact:true}).click();
   for(const name of ["School Registration","Academic Sections","Classroom Setup","Bell Time & Calendar"]) {
     await page.locator(".structure-tabs").getByRole("button",{name:new RegExp(name.replace("&","\\&"))}).click();
@@ -544,7 +519,7 @@ test("client school inspection and configuration remain separate entry points", 
   await expect(page.getByRole("heading",{name:"Structure Management",exact:true})).toBeVisible();
   await expect(page.locator(".structure-tabs")).toHaveCount(0);
   await expect(page.getByRole("button",{name:"Cards",exact:true})).toHaveAttribute("aria-pressed","true");
-  await page.getByRole("button",{name:"Continue Configuration",exact:true}).click();
+  await page.getByRole("button",{name:"Open configuration",exact:true}).click();
   await expect(page.locator(".structure-tabs")).toBeVisible();
   await section(page,"Schools");
   await page.getByRole("button",{name:schoolName,exact:true}).click();

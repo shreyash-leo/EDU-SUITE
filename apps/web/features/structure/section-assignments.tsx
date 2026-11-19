@@ -1,38 +1,31 @@
 "use client";
-import { useEffect, useState, useRef } from "react";
-import { useNavigationGuard } from "../../lib/navigation";
+import { useEffect, useState } from "react";
 import { Button, DataTable, Badge, Empty } from "../../components/ui";
-import { assignGrades, configurationImpact } from "../../../../packages/domain/src/impact";
-import { EffectiveChangePreview } from "./effective-change-preview";
-import { ImpactPreview } from "./impact-preview";
-import type { Board, Config } from "../../../../packages/domain/src";
+import { assignGrades } from "../../../../packages/domain/src/impact";
+import type { Board } from "../../../../packages/domain/src";
 
-export function SectionAssignments({ yearId, lock, revisionId, config, board, editable, onChange, onEdit, onDelete }: { yearId: string; lock: number; revisionId: string; config: Config; board: Board; editable: boolean; onChange: (board: Board) => void; onEdit: (section?: Board["sections"][number]) => void; onDelete: (section: Board["sections"][number]) => void }) {
+export function SectionAssignments({ board, editable, onChange, onEdit, onDelete }: { board: Board; editable: boolean; onChange: (board: Board) => void; onEdit: (section?: Board["sections"][number]) => void; onDelete: (section: Board["sections"][number]) => void }) {
   const [selected, setSelected] = useState("unassigned"), [adding, setAdding] = useState(false), [destination, setDestination] = useState(""), [undo, setUndo] = useState<Board | null>(null), [message, setMessage] = useState("");
-  const [pending, setPending] = useState<{ next: Board; base: string; ids: string[]; target: string | null } | null>(null), [error, setError] = useState("");
-  useEffect(() => { setPending(null); setError(""); setSelected("unassigned"); setAdding(false); setDestination(""); setUndo(null); setMessage(""); }, [board.id]);
+  const [error, setError] = useState("");
+  useEffect(() => { setError(""); setSelected("unassigned"); setAdding(false); setDestination(""); setUndo(null); setMessage(""); }, [board.id]);
   useEffect(() => { if (selected !== "unassigned" && !board.sections.some((s) => s.id === selected)) { setSelected("unassigned"); setAdding(false); } }, [board.sections, selected]);
-  const pendingRef = useRef(pending); pendingRef.current = pending;
-  useNavigationGuard({label:"Unconfirmed grade assignment preview",isDirty:()=>!!pendingRef.current,discard:()=>{pendingRef.current=null;setPending(null);setError("");}});
   const current = board.sections.find((s) => s.id === selected);
   const rows = board.grades.filter((g) => adding ? g.sectionId !== selected : selected === "unassigned" ? !g.sectionId : g.sectionId === selected);
   function assign(ids: string[], target: string | null) {
-    const next = assignGrades(board, ids, target);
-    setPending({ next, base: JSON.stringify(board), ids, target }); setError("");
-  }
-  function confirmAssignment() {
-    if (!pending) return;
-    if (JSON.stringify(board) !== pending.base) { setError("This board changed while the impact was open. Cancel and preview the assignment again."); return; }
-    setUndo(structuredClone(board)); onChange(pending.next);
-    setMessage(`${pending.ids.length} grade${pending.ids.length === 1 ? "" : "s"} ${pending.target ? "assigned to " + board.sections.find((s) => s.id === pending.target)?.name : "moved to Unassigned"}.`);
-    setAdding(false); setPending(null);
+    if (!editable || !ids.length) return;
+    try {
+      const next = assignGrades(board, ids, target);
+      setUndo(structuredClone(board));
+      onChange(next);
+      setMessage(`${ids.length} grade${ids.length === 1 ? "" : "s"} ${target ? "assigned to " + board.sections.find((s) => s.id === target)?.name : "moved to Unassigned"}.`);
+      setAdding(false); setError("");
+    } catch (error) { setError((error as Error).message); }
   }
   return <>
     <div className="section-head"><div><h2>Academic sections</h2><p>Select a section, then select grades to assign, move or unassign them.</p></div><Button variant="dark" disabled={!editable} onClick={() => onEdit()}>Add section</Button></div>
     {message && <div className="notice success" role="status"><span>{message}</span>{undo && <Button disabled={!editable} onClick={() => { onChange({ ...board, grades: board.grades.map((g) => { const previous = undo.grades.find((x) => x.id === g.id); return previous ? { ...g, sectionId: previous.sectionId && board.sections.some((s) => s.id === previous.sectionId) ? previous.sectionId : null } : g; }) }); setUndo(null); setMessage("Last assignment undone."); }}>Undo assignment</Button>}</div>}
-    {pending && <div className="assignment-impact"><ImpactPreview impact={configurationImpact(config, { ...config, boards: config.boards.map((b) => b.id === board.id ? pending.next : b) })} title="Grade assignment impact" /><EffectiveChangePreview yearId={yearId} lock={lock} revisionId={revisionId} config={{...config,boards:config.boards.map(b=>b.id===board.id?pending.next:b)}} /><footer className="form-footer"><Button onClick={() => { setPending(null); setError(""); }}>Cancel assignment preview</Button><Button variant="dark" onClick={confirmAssignment}>Confirm assignment</Button></footer></div>}
     {error && <div className="notice error" role="alert">{error}</div>}
-    <div className="summary-strip"><span>Assigned grades: <strong>{board.grades.filter(g=>g.sectionId).length}</strong></span><span>Unassigned: <strong>{board.grades.filter(g=>!g.sectionId).length}</strong></span><span>Moving a grade updates its inherited timing and holiday rules. Preview the impact before confirming.</span></div>
+    <div className="summary-strip"><span>Assigned grades: <strong>{board.grades.filter(g=>g.sectionId).length}</strong></span><span>Unassigned: <strong>{board.grades.filter(g=>!g.sectionId).length}</strong></span><span>Moving a grade updates its inherited timing and holiday rules. You can undo the last assignment.</span></div>
     <div className="assignment-layout"><aside className="section-picker" aria-label="Academic sections">
       {[{ id: "unassigned", name: "Unassigned grades" }, ...board.sections].map((s) => <button key={s.id} className={selected === s.id ? "selected" : ""} aria-pressed={selected === s.id} onClick={() => { setSelected(s.id); setAdding(false); setDestination(""); }}><span>{s.name}</span><strong>{board.grades.filter((g) => s.id === "unassigned" ? !g.sectionId : g.sectionId === s.id).length}</strong></button>)}
     </aside><section className="assignment-content" aria-label="Grades in selected section">

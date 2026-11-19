@@ -1,188 +1,62 @@
 "use client";
 import { settleNavigationGuards } from "./navigation-core";
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogDescription,
-} from "../components/ui/dialog";
-import { ShadcnButton } from "../components/ui/button";
+import React, { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 export type NavigationGuard = {
   label: string;
   isDirty: () => boolean;
   save?: () => Promise<void>;
   discard: () => void | Promise<void>;
+  autoSave?: boolean;
 };
 type NavigationContextType = {
   register: (id: string, guard: NavigationGuard) => () => void;
   navigate: (action: () => void | Promise<void>) => Promise<boolean>;
+  readDraft: (key: string) => Record<string, any> | undefined;
+  writeDraft: (key: string, values: Record<string, any>) => void;
+  clearDraft: (key: string) => void;
+  clearDrafts: () => void;
 };
 const NavigationContext = createContext<NavigationContextType | null>(null);
-export function NavigationProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export function NavigationProvider({ children }: { children: React.ReactNode }) {
   const guards = useRef(new Map<string, NavigationGuard>());
-  const pendingRef = useRef<{
-    action: () => void | Promise<void>;
-    resolve: (ok: boolean) => void;
-  } | null>(null);
-  const [pending, setPending] = useState(false),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
+  // Session memory only. Password fields never enter this cache.
+  const drafts = useRef(new Map<string, Record<string, any>>());
+  const navigating = useRef(false);
+  const [error, setError] = useState("");
   const register = useCallback((id: string, guard: NavigationGuard) => {
     guards.current.set(id, guard);
-    return () => {
-      guards.current.delete(id);
-    };
+    return () => { guards.current.delete(id); };
   }, []);
   const navigate = useCallback(async (action: () => void | Promise<void>) => {
-    if (pendingRef.current) return false;
-    if (![...guards.current.values()].some((g) => g.isDirty())) {
-      await action();
-      return true;
-    }
-    return new Promise<boolean>((resolve) => {
-      pendingRef.current = { action, resolve };
-      setError("");
-      setPending(true);
-    });
-  }, []);
-  useEffect(() => {
-    const unload = (e: BeforeUnloadEvent) => {
-      if ([...guards.current.values()].some((g) => g.isDirty())) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    };
-    const links = (e: MouseEvent) => {
-      const a = (e.target as Element)?.closest?.(
-        "a[href]",
-      ) as HTMLAnchorElement | null;
-      if (
-        !a ||
-        e.defaultPrevented ||
-        e.button ||
-        e.metaKey ||
-        e.ctrlKey ||
-        e.shiftKey ||
-        e.altKey ||
-        a.target === "_blank" ||
-        a.hasAttribute("download") ||
-        !/^https?:/.test(a.href) ||
-        ![...guards.current.values()].some((g) => g.isDirty())
-      )
-        return;
-      e.preventDefault();
-      void navigate(() => {
-        location.assign(a.href);
-      });
-    };
-    window.addEventListener("beforeunload", unload);
-    document.addEventListener("click", links);
-    return () => {
-      window.removeEventListener("beforeunload", unload);
-      document.removeEventListener("click", links);
-    };
-  }, [navigate]);
-  const decide = async (choice: "stay" | "save" | "discard") => {
-    if (busy) return;
-    const request = pendingRef.current;
-    if (!request) return;
-    if (choice === "stay") {
-      pendingRef.current = null;
-      setPending(false);
-      request.resolve(false);
-      return;
-    }
-    setBusy(true);
+    if (navigating.current) return false;
+    navigating.current = true;
     setError("");
     try {
-      await settleNavigationGuards(() => [...guards.current.values()], choice);
-      pendingRef.current = null;
-      setPending(false);
-      await request.action();
-      request.resolve(true);
-    } catch (e) {
-      pendingRef.current = request;
-      setPending(true);
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <NavigationContext.Provider
-      value={useMemo(() => ({ register, navigate }), [register, navigate])}
-    >
-      {children}
-      <Dialog
-        open={pending}
-        onOpenChange={(open) => {
-          if (!open) void decide("stay");
-        }}
-      >
-        <DialogContent className="navigation-dialog">
-          <header>
-            <DialogTitle>Unsaved changes</DialogTitle>
-            <DialogDescription>
-              Save your work before continuing, or explicitly discard the
-              unsaved edits.
-            </DialogDescription>
-          </header>
-          <div className="modal-body">
-            <ul>
-              {[...guards.current.values()]
-                .filter((g) => g.isDirty())
-                .map((g, n) => (
-                  <li key={n}>{g.label}</li>
-                ))}
-            </ul>
-            {error && (
-              <div className="notice error" role="alert">
-                {error}
-              </div>
-            )}
-            <div className="row-actions">
-              <ShadcnButton disabled={busy} onClick={() => void decide("stay")}>
-                Stay here
-              </ShadcnButton>
-              <ShadcnButton
-                variant="destructive"
-                disabled={busy}
-                onClick={() => void decide("discard")}
-              >
-                Discard Unsaved Changes
-              </ShadcnButton>
-              <ShadcnButton
-                variant="default"
-                disabled={
-                  busy ||
-                  [...guards.current.values()].some(
-                    (g) => g.isDirty() && !g.save,
-                  )
-                }
-                onClick={() => void decide("save")}
-              >
-                {busy ? "Saving…" : "Save & continue"}
-              </ShadcnButton>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </NavigationContext.Provider>
-  );
+      await settleNavigationGuards(() => [...guards.current.values()].filter(g => g.autoSave && g.save), "save");
+      await action();
+      return true;
+    } catch (error) {
+      setError(`Your changes could not be saved. ${(error as Error).message}`);
+      return false;
+    } finally { navigating.current = false; }
+  }, []);
+  useEffect(() => {
+    const links = (event: MouseEvent) => {
+      const anchor = (event.target as Element)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!anchor || event.defaultPrevented || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || anchor.target === "_blank" || anchor.hasAttribute("download") || !/^https?:/.test(anchor.href) || ![...guards.current.values()].some(g => g.autoSave && g.isDirty())) return;
+      event.preventDefault();
+      void navigate(() => location.assign(anchor.href));
+    };
+    document.addEventListener("click", links);
+    return () => document.removeEventListener("click", links);
+  }, [navigate]);
+  const value = useMemo(() => ({ register, navigate,
+    readDraft: (key: string) => drafts.current.get(key),
+    writeDraft: (key: string, values: Record<string, any>) => { drafts.current.set(key, values); },
+    clearDraft: (key: string) => { drafts.current.delete(key); },
+    clearDrafts: () => { drafts.current.clear(); setError(""); },
+  }), [register, navigate]);
+  return <NavigationContext.Provider value={value}>{children}{error && <div className="navigation-save-error notice error" role="alert"><span>{error}</span><button type="button" className="button small" onClick={() => setError("")}>Dismiss</button></div>}</NavigationContext.Provider>;
 }
 export function useNavigation() {
   const value = useContext(NavigationContext);
@@ -192,16 +66,12 @@ export function useNavigation() {
 export function useNavigationGuard(guard: NavigationGuard) {
   const { register } = useNavigation();
   const id = useId();
-  const latest = useRef(guard);
-  latest.current = guard;
-  useEffect(
-    () =>
-      register(id, {
-        label: guard.label,
-        isDirty: () => latest.current.isDirty(),
-        save: guard.save ? () => latest.current.save!() : undefined,
-        discard: () => latest.current.discard(),
-      }),
-    [id, register, guard.label, !!guard.save],
-  );
+  const latest = useRef(guard); latest.current = guard;
+  useEffect(() => register(id, {
+    label: guard.label,
+    isDirty: () => latest.current.isDirty(),
+    save: guard.save ? () => latest.current.save!() : undefined,
+    discard: () => latest.current.discard(),
+    autoSave: guard.autoSave,
+  }), [id, register, guard.label, !!guard.save, guard.autoSave]);
 }

@@ -548,7 +548,6 @@ html, body, * {
 .workflow-page-header { padding: 10px 0 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
 .workflow-page-body { background: white; border: 1px solid var(--border); border-radius: 6px; padding: 24px; }
 .workflow-page-body .form-grid { max-width: 100%; }
-.app-shell:has(> .workflow-page) .content-shell > .main { visibility: hidden; }
 .calendar-summary { display: flex; flex-wrap: wrap; gap: 24px; padding: 14px 0; border-block: 1px solid var(--border); margin: 16px 0; }
 .calendar-summary strong { display: block; font-size: 20px; font-weight: 600; }
 .calendar-summary small { display: block; }
@@ -557,6 +556,4 @@ html, body, * {
 .client-overview-grid strong { display: block; font-size: 24px; }
 @media(max-width:900px) { .workflow-page { left: 0; padding: 18px; } .client-overview-grid { grid-template-columns: 1fr; } }
 
-body:has(.workflow-page) { overflow: hidden; }
-.main:has(.workflow-page) { visibility: hidden; }
 .workflow-page { visibility: visible; }
